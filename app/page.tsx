@@ -1,11 +1,11 @@
 import Navbar from "../components/Navbar";
-import Chat from "../components/Chat";
+import ChatWindow from "../components/ChatWindow";
 
 export default function Home() {
   return (
     <div>
       <Navbar />
-      <Chat />
+      <ChatWindow />
     </div>
   );
 }
