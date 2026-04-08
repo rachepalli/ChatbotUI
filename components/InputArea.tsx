@@ -1,11 +1,13 @@
 "use client";
 import { useState } from "react";
 
-type InputProps = {
-  onSend: (message: string) => void;
+type Props = {
+  onSend: (text: string) => void;
+  disabled?: boolean;
+  dark?: boolean;
 };
 
-export default function InputArea({ onSend }: InputProps) {
+export default function InputArea({ onSend, disabled, dark }: Props) {
   const [input, setInput] = useState("");
 
   const handleSend = () => {
@@ -19,19 +21,23 @@ export default function InputArea({ onSend }: InputProps) {
       style={{
         display: "flex",
         padding: "10px",
-        borderTop: "1px solid #ccc",
-        gap: "10px",
+        border: "1px solid #ccc",
+        borderRadius: "25px",
+        background: dark ? "#2a2a2a" : "#fff",
       }}
     >
       <input
+        disabled={disabled}
         value={input}
         onChange={(e) => setInput(e.target.value)}
         placeholder="Type a message..."
         style={{
           flex: 1,
+          border: "none",
+          outline: "none",
           padding: "10px",
-          borderRadius: "8px",
-          border: "1px solid #ccc",
+          background: "transparent",
+          color: "inherit",
         }}
         onKeyDown={(e) => {
           if (e.key === "Enter") handleSend();
@@ -39,15 +45,16 @@ export default function InputArea({ onSend }: InputProps) {
       />
 
       <button
+      
         onClick={handleSend}
         disabled={!input.trim()}
         style={{
-          padding: "10px 15px",
-          borderRadius: "8px",
-          background: input.trim() ? "#007bff" : "#aaa",
-          color: "white",
           border: "none",
-          cursor: input.trim() ? "pointer" : "not-allowed",
+          background: "#007bff",
+          color: "white",
+          borderRadius: "20px",
+          padding: "8px 12px",
+          cursor: "pointer",
         }}
       >
         Send
