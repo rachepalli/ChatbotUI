@@ -75,22 +75,29 @@ export default function ChatWindow() {
     return (
         <div
             style={{
-                maxWidth: "600px",
-                margin: "auto",
-                height: "100vh",
-                display: "flex",
-                flexDirection: "column",
-                border: "1px solid #ccc",
-            }}
+    maxWidth: "600px",
+    width: "100%",
+    margin: "auto",
+    height: "100vh",
+    display: "flex",
+    flexDirection: "column",
+    border: "1px solid #ccc",
+    borderRadius: "10px",
+    boxShadow: "0 2px 10px rgba(0,0,0,0.1)",
+}}
         >
             {/* Header */}
             <div
                 style={{
-                    padding: "12px",
-                    background: "#007bff",
-                    color: "white",
-                    fontWeight: "bold",
-                }}
+    padding: "14px",
+    background: "#007bff",
+    color: "white",
+    fontWeight: "bold",
+    fontSize: "18px",
+    textAlign: "center",
+    borderTopLeftRadius: "10px",
+    borderTopRightRadius: "10px",
+}}
             >
                 ChatBot 🤖
             </div>
@@ -98,24 +105,27 @@ export default function ChatWindow() {
             {/* Messages */}
             <div
                 style={{
-                    flex: 1,
-                    overflowY: "auto",
-                    padding: "10px",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "10px",
-                }}
+    flex: 1,
+    overflowY: "auto",
+    padding: "15px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "10px",
+    background: "#f9f9f9",
+}}
             >
                 {messages.map((msg) => (
                     <Message key={msg.id} {...msg} />
                 ))}
 
                 {/* Typing Indicator */}
-                {loading && (
-                    <div style={{ fontStyle: "italic", color: "gray" }}>
-                        Bot is typing...
-                    </div>
-                )}
+               {loading && (
+    <div style={{ display: "flex", gap: "4px", padding: "5px" }}>
+        <span className="dot"></span>
+        <span className="dot"></span>
+        <span className="dot"></span>
+    </div>
+)}
 
                 <div ref={bottomRef} />
             </div>
