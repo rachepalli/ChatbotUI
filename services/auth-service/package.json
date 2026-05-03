@@ -1,0 +1,10 @@
+{
+  "name": "auth-service",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "mongodb": "^6.21.0",
+    "nodemailer": "^7.0.13"
+  }
+}

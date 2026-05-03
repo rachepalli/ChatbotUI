@@ -1,30 +1,51 @@
-// app/api/chat/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { proxyJson } from "@/lib/http/service-proxy";
 
-const mockResponses = [
-  "That's a great question! Let me think about it.",
-  "Meow! Interesting point 🐱",
-  "I agree with you on that.",
-  "Here's what I know about this topic...",
-  "Could you tell me more about what you mean?",
-  "That's fascinating! Here's my take on it.",
-];
+const gatewayUrl = process.env.API_GATEWAY_URL || "http://localhost:8080";
+const chatServiceUrl = process.env.CHAT_SERVICE_URL || "http://localhost:4003";
 
-export async function POST(request: NextRequest) {
+export async function POST(req: NextRequest) {
   try {
-    const { message } = await request.json();
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.email) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
-    // Simulate thinking time
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    const body = await req.json();
+    const headers = { "x-user-id": session.user.email };
 
-    const randomReply = mockResponses[Math.floor(Math.random() * mockResponses.length)];
+    let response;
+    try {
+      response = await proxyJson({
+        baseUrl: gatewayUrl,
+        path: "/api/chat",
+        method: "POST",
+        body,
+        headers,
+      });
+    } catch {
+      response = null;
+    }
 
-    return NextResponse.json({
-      reply: `${randomReply} You said: "${message}"`,
-    });
-  } catch (error) {
-    return NextResponse.json(
-      { reply: "Sorry, I couldn't process that request." },
+    if (!response || response.status === 404 || response.status === 502) {
+      response = await proxyJson({
+        baseUrl: chatServiceUrl,
+        path: "/",
+        method: "POST",
+        body,
+        headers,
+      });
+    }
+
+    return Response.json(response.data, { status: response.status });
+  } catch {
+    return Response.json(
+      {
+        error: "Internal Server Error",
+        reply: "AI pipeline failed",
+      },
       { status: 500 }
     );
   }

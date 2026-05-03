@@ -1,0 +1,77 @@
+version: "3.9"
+
+services:
+  api-gateway:
+    image: nginx:1.27-alpine
+    container_name: myapp-api-gateway
+    ports:
+      - "8080:80"
+    volumes:
+      - ./services/api-gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - auth-service
+      - thread-service
+      - chat-service
+      - llm-service
+
+  auth-service:
+    image: node:20-alpine
+    container_name: myapp-auth-service
+    working_dir: /app
+    command: sh -c "npm install --omit=dev && node server.js"
+    env_file:
+      - ./.env.local
+    environment:
+      - PORT=4001
+      - SERVICE_NAME=auth-service
+    volumes:
+      - ./services/auth-service:/app
+    ports:
+      - "4001:4001"
+
+  thread-service:
+    image: node:20-alpine
+    container_name: myapp-thread-service
+    working_dir: /app
+    command: sh -c "npm install --omit=dev && node server.js"
+    env_file:
+      - ./.env.local
+    environment:
+      - PORT=4002
+      - SERVICE_NAME=thread-service
+    volumes:
+      - ./services/thread-service:/app
+    ports:
+      - "4002:4002"
+
+  chat-service:
+    image: node:20-alpine
+    container_name: myapp-chat-service
+    working_dir: /app
+    command: sh -c "npm install --omit=dev && node server.js"
+    env_file:
+      - ./.env.local
+    environment:
+      - PORT=4003
+      - SERVICE_NAME=chat-service
+      - LLM_SERVICE_URL=http://llm-service:4004
+    volumes:
+      - ./services/chat-service:/app
+    ports:
+      - "4003:4003"
+
+  llm-service:
+    image: node:20-alpine
+    container_name: myapp-llm-service
+    working_dir: /app
+    command: node server.js
+    env_file:
+      - ./.env.local
+    environment:
+      - PORT=4004
+      - SERVICE_NAME=llm-service
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    volumes:
+      - ./services/llm-service:/app
+    ports:
+      - "4004:4004"

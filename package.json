@@ -4,12 +4,24 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:microservices": "node scripts/dev-microservices-local.mjs",
+    "dev:all": "node scripts/dev-microservices-local.mjs --with-next",
+    "setup:microservices": "node scripts/setup-microservices-local.mjs",
+    "smoke:microservices": "node scripts/smoke-microservices.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
+    "@ai-sdk/groq": "^3.0.36",
+    "ai": "^6.0.169",
+    "autoprefixer": "^10.5.0",
+    "bcryptjs": "^3.0.3",
+    "lucide-react": "^1.12.0",
+    "mongoose": "^9.6.0",
     "next": "16.2.2",
+    "next-auth": "^4.24.14",
+    "nodemailer": "^7.0.13",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-icons": "^5.6.0",
@@ -18,6 +30,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/nodemailer": "^8.0.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
