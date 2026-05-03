@@ -2,6 +2,7 @@
 
 import { ArrowRight, Bot, CheckCircle2, MessageSquareText, ShieldCheck, Sparkles } from "lucide-react";
 import { useRouter } from "next/navigation";
+import ThemeToggle from "@/components/ui/ThemeToggle";
 
 export default function Home() {
   const router = useRouter();
@@ -17,14 +18,15 @@ export default function Home() {
           <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[color:var(--accent)] text-white">
             <Bot size={20} />
           </span>
-          RVKBot
+          RVK
         </button>
 
         <div className="flex items-center gap-2">
-          <button type="button" onClick={() => router.push("/login")} className="btn-secondary px-4">
+          <ThemeToggle className="icon-btn h-10 w-10 border border-[color:var(--border)] bg-[color:var(--surface)]" />
+          <button type="button" onClick={() => router.push("/login")} className="btn-secondary px-4 hover:-translate-y-0.5 hover:shadow-md hover:shadow-black/10 dark:hover:shadow-black/30">
             Sign in
           </button>
-          <button type="button" onClick={() => router.push("/signup")} className="btn-primary px-4">
+          <button type="button" onClick={() => router.push("/signup")} className="btn-primary px-4 hover:-translate-y-0.5 hover:shadow-md hover:shadow-black/10 dark:hover:shadow-black/30">
             Start
             <ArrowRight size={16} />
           </button>
@@ -46,28 +48,28 @@ export default function Home() {
           </p>
 
           <div className="mt-8 flex flex-wrap justify-center gap-3">
-            <button type="button" onClick={() => router.push("/signup")} className="btn-primary px-5">
+            <button type="button" onClick={() => router.push("/signup")} className="btn-primary px-5 hover:-translate-y-0.5 hover:shadow-md hover:shadow-black/10 dark:hover:shadow-black/30">
               Create account
               <ArrowRight size={17} />
             </button>
-            <button type="button" onClick={() => router.push("/login")} className="btn-secondary px-5">
+            <button type="button" onClick={() => router.push("/login")} className="btn-secondary px-5 hover:-translate-y-0.5 hover:shadow-md hover:shadow-black/10 dark:hover:shadow-black/30">
               Sign in
             </button>
           </div>
         </div>
 
         <div className="mt-12 grid w-full max-w-4xl gap-3 text-left sm:grid-cols-3">
-          <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--surface)] p-4">
+          <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--surface)] p-4 transition duration-200 hover:-translate-y-1 hover:border-[color:var(--accent)] hover:shadow-lg hover:shadow-black/10 dark:hover:shadow-black/30">
             <ShieldCheck size={18} className="mb-3 text-[color:var(--accent)]" />
             <h2 className="font-semibold">Secure sessions</h2>
             <p className="mt-2 text-sm leading-6 text-[color:var(--muted)]">Your chats stay tied to your account.</p>
           </div>
-          <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--surface)] p-4">
+          <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--surface)] p-4 transition duration-200 hover:-translate-y-1 hover:border-[color:var(--accent)] hover:shadow-lg hover:shadow-black/10 dark:hover:shadow-black/30">
             <Sparkles size={18} className="mb-3 text-[color:var(--accent)]" />
             <h2 className="font-semibold">Model choice</h2>
             <p className="mt-2 text-sm leading-6 text-[color:var(--muted)]">Use Gemini or LLaMA from one clean composer.</p>
           </div>
-          <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--surface)] p-4">
+          <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--surface)] p-4 transition duration-200 hover:-translate-y-1 hover:border-[color:var(--accent)] hover:shadow-lg hover:shadow-black/10 dark:hover:shadow-black/30">
             <MessageSquareText size={18} className="mb-3 text-[color:var(--accent)]" />
             <h2 className="font-semibold">Saved threads</h2>
             <p className="mt-2 text-sm leading-6 text-[color:var(--muted)]">Find, rename, archive, and revisit conversations.</p>

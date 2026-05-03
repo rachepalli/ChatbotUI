@@ -192,7 +192,7 @@ export default function Sidebar({
         <button type="button" onClick={() => setSidebarOpen(!sidebarOpen)} className="icon-btn" title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}>
           {sidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
         </button>
-        {sidebarOpen && <span className="font-semibold">RVKBot</span>}
+        {sidebarOpen && <span className="font-semibold">RVK</span>}
       </div>
 
       {sidebarOpen ? (

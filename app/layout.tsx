@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "RVKBot",
+  title: "RVK",
   description: "A modern multi-model AI chat workspace.",
 };
 

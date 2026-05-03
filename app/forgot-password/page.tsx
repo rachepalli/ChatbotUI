@@ -49,7 +49,7 @@ export default function ForgotPasswordPage() {
           <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[color:var(--accent)] text-white">
             <Bot size={20} />
           </span>
-          RVKBot
+          RVK
         </button>
 
         <h1 className="text-3xl font-semibold tracking-tight">Reset your password</h1>

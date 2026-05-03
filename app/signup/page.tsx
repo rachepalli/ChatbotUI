@@ -4,6 +4,7 @@ import { Bot, Loader2, UserPlus } from "lucide-react";
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import ThemeToggle from "@/components/ui/ThemeToggle";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -59,12 +60,13 @@ export default function SignupPage() {
 
   return (
     <main className="auth-shell">
+      <ThemeToggle />
       <section className="auth-panel">
         <button type="button" onClick={() => router.push("/")} className="mb-8 flex items-center gap-2 font-semibold">
           <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[color:var(--accent)] text-white">
             <Bot size={20} />
           </span>
-          RVKBot
+          RVK
         </button>
 
         <h1 className="text-3xl font-semibold tracking-tight">Create your account</h1>

@@ -1,8 +1,9 @@
 "use client";
 
-import { Bot, Check, Copy, Paperclip, Send, Sparkles, User } from "lucide-react";
+import { Bot, Check, Copy, Globe2, Paperclip, Send, Sparkles, User } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import ThemeToggle from "@/components/ui/ThemeToggle";
 
 export default function ChatWindow({
   activeChatId,
@@ -12,6 +13,7 @@ export default function ChatWindow({
   const [messages, setMessages] = useState<any[]>([]);
   const [input, setInput] = useState("");
   const [model, setModel] = useState("gemini-2.5-flash");
+  const [webSearch, setWebSearch] = useState(false);
   const [sending, setSending] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
@@ -24,7 +26,7 @@ export default function ChatWindow({
       return;
     }
 
-    const optimisticChatId = sessionStorage.getItem("rvkbot:optimisticChatId");
+    const optimisticChatId = sessionStorage.getItem("rvk:optimisticChatId");
     if (optimisticChatId === activeChatId) {
       return;
     }
@@ -91,21 +93,21 @@ export default function ChatWindow({
 
     const finalChatId = activeChatId || crypto.randomUUID();
     if (!activeChatId) {
-      sessionStorage.setItem("rvkbot:optimisticChatId", finalChatId);
+      sessionStorage.setItem("rvk:optimisticChatId", finalChatId);
       setActiveChatId?.(finalChatId);
     }
 
     setMessages((prev) => [
       ...prev,
       { role: "user", content: trimmed },
-      { role: "assistant", content: "Thinking..." },
+      { role: "assistant", content: webSearch ? "Searching the web..." : "Thinking..." },
     ]);
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: trimmed, chatId: finalChatId, model }),
+        body: JSON.stringify({ message: trimmed, chatId: finalChatId, model, webSearch }),
       });
 
       const data = await res.json();
@@ -123,7 +125,7 @@ export default function ChatWindow({
       playReplySound();
 
       onThreadsChanged?.();
-      sessionStorage.removeItem("rvkbot:optimisticChatId");
+      sessionStorage.removeItem("rvk:optimisticChatId");
     } catch (error) {
       setMessages((prev) => {
         const updated = [...prev];
@@ -135,7 +137,7 @@ export default function ChatWindow({
       });
     } finally {
       setSending(false);
-      sessionStorage.removeItem("rvkbot:optimisticChatId");
+      sessionStorage.removeItem("rvk:optimisticChatId");
     }
   };
 
@@ -149,17 +151,34 @@ export default function ChatWindow({
           </p>
         </div>
 
-        <label className="flex items-center gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--surface)] px-3 py-2 text-sm">
-          <Sparkles size={16} className="text-[color:var(--accent)]" />
-          <select value={model} onChange={(e) => setModel(e.target.value)} className="bg-transparent text-sm outline-none">
-            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-            <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
-            <option value="llama-8b">LLaMA 8B</option>
-            <option value="llama-70b">LLaMA 70B</option>
-            <option value="ollama:llama3.2">Ollama Llama 3.2</option>
-            <option value="ollama:llama3.3:70b">Ollama LLaMA 70B</option>
-          </select>
-        </label>
+        <div className="flex items-center gap-2">
+          <ThemeToggle className="icon-btn h-10 w-10 border border-[color:var(--border)] bg-[color:var(--surface)]" />
+          <button
+            type="button"
+            onClick={() => setWebSearch((enabled) => !enabled)}
+            className={`icon-btn h-10 w-10 ${
+              webSearch
+                ? "border-[color:var(--accent)] bg-[color:var(--surface-muted)] text-[color:var(--accent)]"
+                : ""
+            }`}
+            title={webSearch ? "Web search on" : "Web search off"}
+            aria-pressed={webSearch}
+          >
+            <Globe2 size={17} />
+          </button>
+
+          <label className="flex items-center gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--surface)] px-3 py-2 text-sm">
+            <Sparkles size={16} className="text-[color:var(--accent)]" />
+            <select value={model} onChange={(e) => setModel(e.target.value)} className="bg-transparent text-sm outline-none">
+              <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+              <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+              <option value="llama-8b">LLaMA 8B</option>
+              <option value="llama-70b">LLaMA 70B</option>
+              <option value="ollama:llama3.2">Ollama Llama 3.2</option>
+              <option value="ollama:llama3.3:70b">Ollama LLaMA 70B</option>
+            </select>
+          </label>
+        </div>
       </header>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-6">
@@ -235,7 +254,7 @@ export default function ChatWindow({
                 sendMessage();
               }
             }}
-            placeholder="Message RVKBot"
+            placeholder="Message RVK"
             rows={1}
             className="max-h-44 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-sm outline-none placeholder:text-[color:var(--muted)]"
           />

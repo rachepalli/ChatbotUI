@@ -6,6 +6,7 @@ const serviceName = process.env.SERVICE_NAME || "chat-service";
 const mongoUri = process.env.MONGODB_URI;
 const dbName = process.env.MONGODB_DB;
 const llmServiceUrl = (process.env.LLM_SERVICE_URL || "http://localhost:4004").replace(/\/$/, "");
+const tavilySearchUrl = "https://api.tavily.com/search";
 
 let mongoClient;
 let db;
@@ -53,6 +54,118 @@ function buildAutoTitle(message) {
   return message.replace(/\s+/g, " ").trim().slice(0, 50) || "New Chat";
 }
 
+function withTimeout(promise, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+    promise
+      .then((result) => {
+        clearTimeout(timer);
+        resolve(result);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
+
+function normalizeSearchResult(result, index) {
+  return {
+    index: index + 1,
+    title: String(result?.title || "Untitled source").trim(),
+    url: String(result?.url || "").trim(),
+    content: String(result?.content || result?.raw_content || "").replace(/\s+/g, " ").trim(),
+    score: result?.score,
+  };
+}
+
+function formatSearchContext(search) {
+  if (!search?.sources?.length) return "";
+
+  const sourceBlocks = search.sources
+    .map((source) => {
+      const content = source.content ? `\nExcerpt: ${source.content.slice(0, 1200)}` : "";
+      return `[${source.index}] ${source.title}\nURL: ${source.url}${content}`;
+    })
+    .join("\n\n");
+
+  return [
+    `Current date: ${new Date().toISOString().slice(0, 10)}`,
+    "Use the web search results below when they are relevant.",
+    "Cite sources inline with bracket numbers like [1]. If the sources do not answer the question, say so clearly.",
+    "",
+    "Web search results:",
+    sourceBlocks,
+  ].join("\n");
+}
+
+function appendSources(reply, sources) {
+  if (!sources?.length) return reply;
+
+  const sourceList = sources
+    .filter((source) => source.url)
+    .map((source) => `${source.index}. [${source.title}](${source.url})`)
+    .join("\n");
+
+  return sourceList ? `${reply}\n\nSources:\n${sourceList}` : reply;
+}
+
+async function searchWeb(query) {
+  if (!process.env.TAVILY_API_KEY) {
+    return {
+      sources: [],
+      error: { code: "SEARCH_UNAVAILABLE", message: "Missing TAVILY_API_KEY" },
+    };
+  }
+
+  try {
+    const response = await withTimeout(
+      fetch(tavilySearchUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.TAVILY_API_KEY}`,
+        },
+        body: JSON.stringify({
+          query,
+          search_depth: "basic",
+          max_results: 5,
+          include_answer: false,
+          include_raw_content: false,
+          include_images: false,
+        }),
+      }),
+      8000
+    );
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      return {
+        sources: [],
+        error: {
+          code: "SEARCH_BAD_RESPONSE",
+          message: data?.error || data?.message || `Tavily search failed with ${response.status}`,
+        },
+      };
+    }
+
+    return {
+      sources: Array.isArray(data?.results)
+        ? data.results.map(normalizeSearchResult).filter((source) => source.url)
+        : [],
+      error: null,
+    };
+  } catch (error) {
+    return {
+      sources: [],
+      error: {
+        code: error instanceof Error && error.message === "timeout" ? "SEARCH_TIMEOUT" : "SEARCH_UNAVAILABLE",
+        message: "Tavily search request failed",
+      },
+    };
+  }
+}
+
 async function generateReply(message, model) {
   const response = await fetch(`${llmServiceUrl}/generate`, {
     method: "POST",
@@ -92,7 +205,7 @@ async function sendMessage(req, res) {
     return;
   }
 
-  const { message, chatId, model } = await readJson(req);
+  const { message, chatId, model, webSearch } = await readJson(req);
   if (!message || !chatId) {
     sendJson(res, 400, { error: "Missing message or chatId" });
     return;
@@ -146,13 +259,22 @@ async function sendMessage(req, res) {
     );
   }
 
-  const llm = await generateReply(message, model);
+  const search = webSearch ? await searchWeb(message) : { sources: [], error: null };
+  const searchContext = formatSearchContext(search);
+  const llmMessage = searchContext ? `${searchContext}\n\nUser question:\n${message}` : message;
+  const llm = await generateReply(llmMessage, model);
+  const reply = appendSources(llm.reply, search.sources);
+  const searchErrorNote =
+    webSearch && search.error
+      ? `Note: Web search was unavailable (${search.error.message}).\n\n`
+      : "";
+  const assistantContent = `${searchErrorNote}${reply}`;
 
   await messages.insertOne({
     threadId: chatId,
     userId,
     role: "assistant",
-    content: llm.reply,
+    content: assistantContent,
     createdAt: new Date(),
     updatedAt: new Date(),
   });
@@ -160,11 +282,14 @@ async function sendMessage(req, res) {
   const thread = await threads.findOne({ chatId, userId });
 
   sendJson(res, 200, {
-    reply: llm.reply,
+    reply: assistantContent,
     model: llm.model,
     usage: llm.usage,
     fallbackFrom: llm.fallbackFrom,
     fallbackError: llm.fallbackError,
+    webSearch: Boolean(webSearch),
+    searchSources: search.sources,
+    searchError: search.error,
     thread: publicDocument(thread),
     error: llm.error,
   });

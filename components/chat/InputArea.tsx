@@ -43,7 +43,7 @@ export default function InputArea({ onSend, disabled }: InputAreaProps) {
         value={input}
         onChange={(e) => setInput(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder="Message RVKBot"
+        placeholder="Message RVK"
         disabled={disabled}
         rows={1}
         className="max-h-44 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-sm outline-none placeholder:text-[color:var(--muted)]"
