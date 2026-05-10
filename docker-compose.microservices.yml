@@ -13,6 +13,7 @@ services:
       - thread-service
       - chat-service
       - llm-service
+      - rag-service
 
   auth-service:
     image: node:20-alpine
@@ -49,16 +50,35 @@ services:
     container_name: myapp-chat-service
     working_dir: /app
     command: sh -c "npm install --omit=dev && node server.js"
+    depends_on:
+      - rag-service
+      - llm-service
     env_file:
       - ./.env.local
     environment:
       - PORT=4003
       - SERVICE_NAME=chat-service
       - LLM_SERVICE_URL=http://llm-service:4004
+      - RAG_SERVICE_URL=http://rag-service:4005
     volumes:
       - ./services/chat-service:/app
     ports:
       - "4003:4003"
+
+  rag-service:
+    image: python:3.12-slim
+    container_name: myapp-rag-service
+    working_dir: /app
+    command: sh -c "pip install --no-cache-dir -r requirements.txt && python server.py"
+    env_file:
+      - ./.env.local
+    environment:
+      - PORT=4005
+      - SERVICE_NAME=rag-service
+    volumes:
+      - ./services/rag-service:/app
+    ports:
+      - "4005:4005"
 
   llm-service:
     image: node:20-alpine

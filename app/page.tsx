@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, Bot, CheckCircle2, MessageSquareText, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowRight, Bot, MessageSquareText, ShieldCheck, Sparkles } from "lucide-react";
 import { useRouter } from "next/navigation";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 
@@ -35,11 +35,6 @@ export default function Home() {
 
       <section className="mx-auto flex min-h-[calc(100vh-88px)] w-full max-w-6xl flex-col items-center justify-center px-5 pb-10 pt-8 text-center">
         <div className="max-w-3xl">
-          <div className="mb-5 inline-flex items-center gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--surface)] px-3 py-2 text-sm text-[color:var(--muted)]">
-            <CheckCircle2 size={16} className="text-[color:var(--accent)]" />
-            Microservice-backed AI chat
-          </div>
-
           <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl lg:text-6xl">
             A cleaner workspace for focused AI conversations.
           </h1>
