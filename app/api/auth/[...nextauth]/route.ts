@@ -7,6 +7,16 @@ import bcrypt from "bcryptjs";
 import { connectToDatabase } from "@/lib/mongodb";
 import User from "@/models/User";
 
+type SessionUserWithId = NonNullable<AuthOptions["callbacks"]> extends {
+  session?: (...args: infer Args) => unknown;
+}
+  ? Args[0] extends { session: infer Session }
+    ? Session extends { user?: infer User }
+      ? User & { id?: string }
+      : { id?: string }
+    : { id?: string }
+  : { id?: string };
+
 export const authOptions: AuthOptions = {
   providers: [
     // ✅ GOOGLE
@@ -65,7 +75,7 @@ export const authOptions: AuthOptions = {
 
       if (!user.email) return false;
 
-      let dbUser = await User.findOne({ email: user.email });
+      const dbUser = await User.findOne({ email: user.email });
 
       if (!dbUser) {
         await User.create({
@@ -89,7 +99,7 @@ export const authOptions: AuthOptions = {
       });
 
       if (dbUser) {
-        (session.user as any).id = dbUser._id.toString();
+        (session.user as SessionUserWithId).id = dbUser._id.toString();
       }
 
       return session;

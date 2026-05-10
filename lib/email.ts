@@ -31,7 +31,6 @@ export async function sendPasswordResetEmail({
 
   // Local/dev fallback so the flow is testable without SMTP.
   if (!host || !user || !pass || !from) {
-    // eslint-disable-next-line no-console
     console.log(`[PASSWORD RESET] Email to ${to}: ${resetUrl}`);
     return;
   }

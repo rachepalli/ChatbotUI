@@ -1,7 +1,9 @@
 const http = require("http");
+const crypto = require("crypto");
 
 const port = Number(process.env.PORT || 4004);
 const serviceName = process.env.SERVICE_NAME || "llm-service";
+const defaultEmbeddingDimensions = Number(process.env.RAG_EMBEDDING_DIMENSIONS || 768);
 
 function json(res, status, body) {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -18,6 +20,52 @@ function providerMessage(data, fallback) {
 
 function safeJson(data) {
   return data ? JSON.stringify(data) : "";
+}
+
+function normalizeVector(values, dimensions = defaultEmbeddingDimensions) {
+  const vector = Array.from({ length: dimensions }, (_, index) => Number(values?.[index] || 0));
+  const magnitude = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0)) || 1;
+  return vector.map((value) => value / magnitude);
+}
+
+function localEmbedding(text, dimensions = defaultEmbeddingDimensions) {
+  const vector = Array(dimensions).fill(0);
+  const tokens = String(text || "").toLowerCase().match(/[a-z0-9]{2,}/g) || [];
+
+  for (const token of tokens) {
+    const digest = crypto.createHash("sha256").update(token).digest();
+    const index = digest.readUInt32BE(0) % dimensions;
+    const sign = digest[4] % 2 === 0 ? 1 : -1;
+    vector[index] += sign;
+  }
+
+  return normalizeVector(vector, dimensions);
+}
+
+function normalizeAttachments(attachments) {
+  if (!Array.isArray(attachments)) return [];
+
+  return attachments
+    .map((attachment) => ({
+      name: String(attachment?.name || "Attachment").slice(0, 180),
+      mimeType: String(attachment?.mimeType || "").trim(),
+      data: String(attachment?.data || "").trim(),
+    }))
+    .filter((attachment) => attachment.mimeType.startsWith("image/") && attachment.data)
+    .slice(0, 4);
+}
+
+function geminiParts(message, attachments) {
+  const parts = [{ text: message }];
+  for (const attachment of normalizeAttachments(attachments)) {
+    parts.push({
+      inlineData: {
+        mimeType: attachment.mimeType,
+        data: attachment.data,
+      },
+    });
+  }
+  return parts;
 }
 
 function networkErrorMessage(error, provider) {
@@ -83,7 +131,7 @@ async function parseBody(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
-async function callGemini(message, model, timeoutMs) {
+async function callGemini(message, model, timeoutMs, attachments) {
   if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
     return {
       message: "",
@@ -102,7 +150,7 @@ async function callGemini(message, model, timeoutMs) {
         "x-goog-api-key": process.env.GOOGLE_GENERATIVE_AI_API_KEY,
       },
       body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: message }] }],
+        contents: [{ role: "user", parts: geminiParts(message, attachments) }],
       }),
     }),
     timeoutMs
@@ -125,6 +173,57 @@ async function callGemini(message, model, timeoutMs) {
       completionTokens: data?.usageMetadata?.candidatesTokenCount,
       totalTokens: data?.usageMetadata?.totalTokenCount,
     },
+    error: null,
+  };
+}
+
+async function callGeminiEmbeddings(texts, model, timeoutMs, dimensions) {
+  if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    return {
+      embeddings: [],
+      model,
+      dimensions,
+      error: mapError("PROVIDER_UNAVAILABLE", "Missing GOOGLE_GENERATIVE_AI_API_KEY", "gemini"),
+    };
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:batchEmbedContents`;
+  const response = await withTimeout(
+    fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+      },
+      body: JSON.stringify({
+        requests: texts.map((text) => ({
+          model: `models/${model}`,
+          content: { parts: [{ text }] },
+          outputDimensionality: dimensions,
+        })),
+      }),
+    }),
+    timeoutMs
+  );
+
+  const data = await response.json().catch(() => null);
+  const embeddings = Array.isArray(data?.embeddings)
+    ? data.embeddings.map((embedding) => normalizeVector(embedding?.values, dimensions))
+    : [];
+
+  if (!response.ok || embeddings.length !== texts.length) {
+    return {
+      embeddings: [],
+      model,
+      dimensions,
+      error: mapError(providerCode(response), providerMessage(data, `Gemini embeddings bad response ${response.status}: ${safeJson(data)}`), "gemini"),
+    };
+  }
+
+  return {
+    embeddings,
+    model,
+    dimensions,
     error: null,
   };
 }
@@ -217,7 +316,7 @@ async function callOllama(message, model, timeoutMs) {
   };
 }
 
-async function generateWithRetry(message, model, timeoutMs) {
+async function generateWithRetry(message, model, timeoutMs, attachments) {
   const attempts = 3;
   let lastResult = null;
 
@@ -225,7 +324,7 @@ async function generateWithRetry(message, model, timeoutMs) {
     try {
       let result;
       if (isOllamaModel(model)) result = await callOllama(message, model, timeoutMs);
-      else if (model.includes("gemini")) result = await callGemini(message, model, timeoutMs);
+      else if (model.includes("gemini")) result = await callGemini(message, model, timeoutMs, attachments);
       else result = await callGroq(message, model, timeoutMs);
 
       lastResult = result;
@@ -252,15 +351,15 @@ async function generateWithRetry(message, model, timeoutMs) {
   };
 }
 
-async function generateWithFallback(message, requestedModel, timeoutMs) {
+async function generateWithFallback(message, requestedModel, timeoutMs, attachments) {
   const model = normalizeModel(requestedModel);
-  const primary = await generateWithRetry(message, model, timeoutMs);
+  const primary = await generateWithRetry(message, model, timeoutMs, attachments);
   if (!primary.error) return primary;
 
   const fallbackModels = ["llama-8b", "llama-70b"].filter((fallbackModel) => fallbackModel !== model);
 
   for (const fallbackModel of fallbackModels) {
-    const fallback = await generateWithRetry(message, fallbackModel, timeoutMs);
+    const fallback = await generateWithRetry(message, fallbackModel, timeoutMs, attachments);
     if (!fallback.error) {
       return {
         ...fallback,
@@ -285,6 +384,7 @@ const server = http.createServer(async (req, res) => {
       const message = body?.message || "";
       const model = body?.model || "gemini-2.5-flash";
       const timeoutMs = Number(body?.timeoutMs || 10000);
+      const attachments = normalizeAttachments(body?.attachments);
 
       if (!message) {
         return json(res, 400, {
@@ -295,7 +395,7 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      const result = await generateWithFallback(message, model, timeoutMs);
+      const result = await generateWithFallback(message, model, timeoutMs, attachments);
       return json(res, 200, result);
     } catch {
       return json(res, 500, {
@@ -303,6 +403,47 @@ const server = http.createServer(async (req, res) => {
         model: "unknown",
         usage: {},
         error: mapError("INTERNAL_ERROR", "llm-service failed", "llm-service"),
+      });
+    }
+  }
+
+  if (url === "/embed" && req.method === "POST") {
+    try {
+      const body = await parseBody(req);
+      const texts = Array.isArray(body?.texts)
+        ? body.texts.map((text) => String(text || "").slice(0, 8000))
+        : [];
+      const model = String(body?.model || process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001");
+      const timeoutMs = Number(body?.timeoutMs || 15000);
+      const dimensions = Math.min(Math.max(Number(body?.dimensions || defaultEmbeddingDimensions), 128), 3072);
+
+      if (!texts.length) {
+        return json(res, 400, {
+          embeddings: [],
+          model,
+          dimensions,
+          error: mapError("INTERNAL_ERROR", "texts are required", "llm-service"),
+        });
+      }
+
+      const result = await callGeminiEmbeddings(texts, model, timeoutMs, dimensions);
+      if (!result.error) return json(res, 200, result);
+
+      return json(res, 200, {
+        embeddings: texts.map((text) => localEmbedding(text, dimensions)),
+        model: "local-hash-embedding",
+        dimensions,
+        fallbackFrom: model,
+        fallbackError: result.error,
+        error: null,
+      });
+    } catch (error) {
+      const dimensions = defaultEmbeddingDimensions;
+      return json(res, 500, {
+        embeddings: [],
+        model: "unknown",
+        dimensions,
+        error: mapError("INTERNAL_ERROR", error instanceof Error ? error.message : "llm-service embedding failed", "llm-service"),
       });
     }
   }

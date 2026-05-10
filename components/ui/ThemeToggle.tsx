@@ -1,12 +1,16 @@
 "use client";
 
 import { Moon, Sun } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
-function applyTheme(nextTheme: "light" | "dark") {
+export type Theme = "light" | "dark";
+
+export function applyTheme(nextTheme: Theme) {
+  if (typeof document === "undefined") return;
   const root = document.documentElement;
   root.classList.toggle("dark", nextTheme === "dark");
   localStorage.setItem("theme", nextTheme);
+  window.dispatchEvent(new Event("rvk:theme-change"));
 }
 
 export function toggleGlobalTheme() {
@@ -18,21 +22,39 @@ type ThemeToggleProps = {
   className?: string;
 };
 
+function getThemeSnapshot(): Theme {
+  if (typeof window === "undefined") return "dark";
+  const saved = localStorage.getItem("theme") as Theme | null;
+  const systemDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  return saved || (systemDark ? "dark" : "light");
+}
+
+function getServerThemeSnapshot(): Theme {
+  return "dark";
+}
+
+function subscribeTheme(callback: () => void) {
+  const media = window.matchMedia("(prefers-color-scheme: dark)");
+  window.addEventListener("rvk:theme-change", callback);
+  window.addEventListener("storage", callback);
+  media.addEventListener("change", callback);
+
+  return () => {
+    window.removeEventListener("rvk:theme-change", callback);
+    window.removeEventListener("storage", callback);
+    media.removeEventListener("change", callback);
+  };
+}
+
+export function useTheme() {
+  return useSyncExternalStore(subscribeTheme, getThemeSnapshot, getServerThemeSnapshot);
+}
+
 export default function ThemeToggle({ className }: ThemeToggleProps) {
-  const [theme, setTheme] = useState<"light" | "dark">("dark");
-
-  useEffect(() => {
-    const saved = localStorage.getItem("theme") as "light" | "dark" | null;
-    const systemDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    const initialTheme = saved || (systemDark ? "dark" : "light");
-
-    setTheme(initialTheme);
-    applyTheme(initialTheme);
-  }, []);
+  const theme = useTheme();
 
   const handleToggle = () => {
     const nextTheme = theme === "dark" ? "light" : "dark";
-    setTheme(nextTheme);
     applyTheme(nextTheme);
   };
 

@@ -2,6 +2,7 @@
 
 import { useSession, signOut } from "next-auth/react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { applyTheme, useTheme } from "@/components/ui/ThemeToggle";
 import {
   Archive,
   Clock,
@@ -17,35 +18,50 @@ import {
   Trash2,
 } from "lucide-react";
 
+type ChatThread = {
+  _id?: string;
+  chatId: string;
+  title?: string;
+  pinned?: boolean;
+  archived?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+type ThreadPayload = {
+  chatId: string;
+  title?: string;
+  pinned?: boolean;
+  archived?: boolean;
+};
+
+type SidebarProps = {
+  activeChatId?: string | null;
+  setActiveChatId: (chatId: string | null) => void;
+  sidebarOpen: boolean;
+  setSidebarOpen: (open: boolean) => void;
+  refreshKey?: number;
+};
+
 export default function Sidebar({
   activeChatId,
   setActiveChatId,
   sidebarOpen,
   setSidebarOpen,
   refreshKey,
-}: any) {
+}: SidebarProps) {
   const { data: session } = useSession();
   const [search, setSearch] = useState("");
-  const [chats, setChats] = useState<any[]>([]);
+  const [chats, setChats] = useState<ChatThread[]>([]);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [showArchive, setShowArchive] = useState(false);
   const [showRecents, setShowRecents] = useState(true);
   const [showAccount, setShowAccount] = useState(false);
-  const [theme, setTheme] = useState("dark");
+  const theme = useTheme();
 
   const menuRef = useRef<HTMLDivElement | null>(null);
   const accountRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    document.documentElement.classList.toggle("dark", theme === "dark");
-    localStorage.setItem("theme", theme);
-  }, [theme]);
-
-  useEffect(() => {
-    const saved = localStorage.getItem("theme");
-    if (saved === "light" || saved === "dark") setTheme(saved);
-  }, []);
 
   const loadChats = async () => {
     const res = await fetch("/api/thread");
@@ -54,7 +70,19 @@ export default function Sidebar({
   };
 
   useEffect(() => {
-    loadChats();
+    let cancelled = false;
+
+    const load = async () => {
+      const res = await fetch("/api/thread");
+      const data = await res.json();
+      if (!cancelled) setChats(data.threads || []);
+    };
+
+    void load();
+
+    return () => {
+      cancelled = true;
+    };
   }, [refreshKey]);
 
   useEffect(() => {
@@ -103,7 +131,7 @@ export default function Sidebar({
     await loadChats();
   };
 
-  const updateChat = async (payload: any) => {
+  const updateChat = async (payload: ThreadPayload) => {
     await fetch("/api/thread", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -113,7 +141,7 @@ export default function Sidebar({
     await loadChats();
   };
 
-  const deleteChat = async (chat: any) => {
+  const deleteChat = async (chat: ChatThread) => {
     await fetch("/api/thread", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
@@ -124,7 +152,7 @@ export default function Sidebar({
     await loadChats();
   };
 
-  const renameChat = (chat: any) => {
+  const renameChat = (chat: ChatThread) => {
     const title = prompt("Rename chat", chat.title);
     if (!title?.trim()) return;
     updateChat({ chatId: chat.chatId, title: title.trim() });
@@ -132,7 +160,7 @@ export default function Sidebar({
 
   const userInitial = session?.user?.name?.charAt(0)?.toUpperCase() || session?.user?.email?.charAt(0)?.toUpperCase() || "U";
 
-  const ChatItem = ({ chat }: any) => {
+  const ChatItem = ({ chat }: { chat: ChatThread }) => {
     const selected = activeChatId === chat.chatId;
 
     return (
@@ -188,7 +216,7 @@ export default function Sidebar({
 
   return (
     <aside className={`flex h-screen shrink-0 flex-col border-r border-[color:var(--border)] bg-[color:var(--surface)] transition-[width] duration-200 ${sidebarOpen ? "w-80" : "w-16"}`}>
-      <div className="flex h-16 items-center gap-2 border-b border-[color:var(--border)] px-3">
+      <div className="flex h-16 items-center gap-2 px-3">
         <button type="button" onClick={() => setSidebarOpen(!sidebarOpen)} className="icon-btn" title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}>
           {sidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
         </button>
@@ -197,7 +225,7 @@ export default function Sidebar({
 
       {sidebarOpen ? (
         <>
-          <div className="space-y-3 border-b border-[color:var(--border)] p-3">
+          <div className="space-y-3 p-3">
             <button type="button" onClick={createChat} className="btn-primary w-full">
               <Plus size={17} />
               New chat
@@ -277,7 +305,7 @@ export default function Sidebar({
         </div>
       )}
 
-      <div className="relative border-t border-[color:var(--border)] p-3">
+      <div className="relative p-3">
         <button
           type="button"
           onClick={(e) => {
@@ -300,7 +328,7 @@ export default function Sidebar({
           <div ref={accountRef} className="menu-surface absolute bottom-16 left-3 z-[90] w-64 p-3">
             <p className="truncate font-semibold">{session?.user?.name || "User"}</p>
             <p className="mt-1 truncate text-sm text-[color:var(--muted)]">{session?.user?.email || "No email available"}</p>
-            <button type="button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} className="btn-secondary mt-4 w-full">
+            <button type="button" onClick={() => applyTheme(theme === "dark" ? "light" : "dark")} className="btn-secondary mt-4 w-full">
               {theme === "dark" ? "Light mode" : "Dark mode"}
             </button>
             <button type="button" onClick={() => signOut({ callbackUrl: "/" })} className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-100 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200">
