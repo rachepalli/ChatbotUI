@@ -5,6 +5,8 @@ import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import ThemeToggle from "@/components/ui/ThemeToggle";
+import LanguageSwitcher from "@/components/ui/LanguageSwitcher";
+import { useAppTranslation } from "@/components/ui/Language";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -14,22 +16,23 @@ export default function SignupPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const t = useAppTranslation();
 
   const handleSignup = async () => {
     setError("");
 
     if (!name || !email || !password || !confirmPassword) {
-      setError("Fill in all fields to continue.");
+      setError(t("fillAllFields"));
       return;
     }
 
     if (password !== confirmPassword) {
-      setError("Passwords do not match.");
+      setError(t("passwordsDoNotMatch"));
       return;
     }
 
     if (password.length < 6) {
-      setError("Use at least 6 characters for your password.");
+      setError(t("useSixPassword"));
       return;
     }
 
@@ -44,7 +47,7 @@ export default function SignupPage() {
 
     if (!res.ok) {
       setLoading(false);
-      setError(data.error || "Signup failed.");
+      setError(data.error || t("signupFailed"));
       return;
     }
 
@@ -60,6 +63,7 @@ export default function SignupPage() {
 
   return (
     <main className="auth-shell">
+      <LanguageSwitcher />
       <ThemeToggle />
       <section className="auth-panel">
         <button type="button" onClick={() => router.push("/")} className="mb-8 flex items-center gap-2 font-semibold">
@@ -69,18 +73,18 @@ export default function SignupPage() {
           RVK
         </button>
 
-        <h1 className="text-3xl font-semibold tracking-tight">Create your account</h1>
+        <h1 className="text-3xl font-semibold tracking-tight">{t("createAccountTitle")}</h1>
         <p className="mt-2 text-sm leading-6 text-[color:var(--muted)]">
-          Save chat history, organize threads, and use multiple models.
+          {t("signUpDescription")}
         </p>
 
         <div className="mt-7 space-y-3">
-          <input type="text" placeholder="Full name" className="field" value={name} onChange={(e) => setName(e.target.value)} />
-          <input type="email" placeholder="Email address" className="field" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <input type="password" placeholder="Password" className="field" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <input type="text" placeholder={t("fullName")} className="field" value={name} onChange={(e) => setName(e.target.value)} />
+          <input type="email" placeholder={t("emailAddress")} className="field" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input type="password" placeholder={t("password")} className="field" value={password} onChange={(e) => setPassword(e.target.value)} />
           <input
             type="password"
-            placeholder="Confirm password"
+            placeholder={t("confirmPassword")}
             className="field"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
@@ -98,13 +102,13 @@ export default function SignupPage() {
 
         <button type="button" onClick={handleSignup} disabled={loading} className="btn-primary mt-5 w-full">
           {loading ? <Loader2 size={17} className="animate-spin" /> : <UserPlus size={17} />}
-          {loading ? "Creating account" : "Create account"}
+          {loading ? t("creatingAccount") : t("createAccount")}
         </button>
 
         <p className="mt-7 text-center text-sm text-[color:var(--muted)]">
-          Already have an account?{" "}
+          {t("alreadyHaveAccount")}{" "}
           <button type="button" onClick={() => router.push("/login")} className="font-semibold text-[color:var(--accent)]">
-            Sign in
+            {t("signIn")}
           </button>
         </p>
       </section>

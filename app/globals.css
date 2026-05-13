@@ -1,25 +1,31 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f6f7f9;
-  --foreground: #171a1f;
+  --background: #fbfcff;
+  --foreground: #202532;
   --surface: #ffffff;
-  --surface-muted: #eef1f5;
-  --border: #d8dee8;
-  --muted: #667085;
-  --accent: #0f766e;
-  --accent-strong: #115e59;
+  --surface-muted: #f1f4f9;
+  --sidebar: #f3f5fb;
+  --border: #dfe5ef;
+  --muted: #6c7484;
+  --accent: #4d6bfe;
+  --accent-strong: #3854d8;
+  --composer-shadow: 0 18px 48px rgba(25, 39, 76, 0.12);
+  --menu-shadow: 0 18px 50px rgba(25, 39, 76, 0.16);
 }
 
 .dark {
-  --background: #0f1115;
-  --foreground: #f4f7fb;
-  --surface: #171a21;
-  --surface-muted: #20242d;
-  --border: #2d3440;
-  --muted: #9aa4b2;
-  --accent: #2dd4bf;
-  --accent-strong: #5eead4;
+  --background: #10141d;
+  --foreground: #edf2fb;
+  --surface: #161b25;
+  --surface-muted: #202838;
+  --sidebar: #0d121b;
+  --border: #2a3343;
+  --muted: #9aa6ba;
+  --accent: #6f86ff;
+  --accent-strong: #8ea1ff;
+  --composer-shadow: 0 18px 54px rgba(0, 0, 0, 0.38);
+  --menu-shadow: 0 18px 54px rgba(0, 0, 0, 0.34);
 }
 
 @theme inline {
@@ -65,9 +71,18 @@ button:disabled {
 
 .app-shell {
   min-height: 100vh;
-  background:
-    linear-gradient(180deg, rgba(15, 118, 110, 0.08), transparent 280px),
-    var(--background);
+  background: var(--background);
+}
+
+.chat-sidebar {
+  --foreground: #111827;
+  --muted: #111827;
+  background: var(--sidebar);
+}
+
+.dark .chat-sidebar {
+  --foreground: #ffffff;
+  --muted: rgba(255, 255, 255, 0.82);
 }
 
 .auth-shell {
@@ -76,8 +91,8 @@ button:disabled {
   place-items: center;
   padding: 24px;
   background:
-    linear-gradient(135deg, rgba(15, 118, 110, 0.12), transparent 42%),
-    linear-gradient(315deg, rgba(51, 65, 85, 0.12), transparent 38%),
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 12%, transparent), transparent 42%),
+    linear-gradient(315deg, rgba(51, 65, 85, 0.08), transparent 38%),
     var(--background);
 }
 
@@ -175,7 +190,7 @@ button:disabled {
   background: var(--surface);
   color: var(--foreground);
   border-radius: 8px;
-  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.18);
+  box-shadow: var(--menu-shadow);
 }
 
 .message-markdown p {

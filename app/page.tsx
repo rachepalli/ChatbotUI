@@ -3,9 +3,12 @@
 import { ArrowRight, Bot, MessageSquareText, ShieldCheck, Sparkles } from "lucide-react";
 import { useRouter } from "next/navigation";
 import ThemeToggle from "@/components/ui/ThemeToggle";
+import LanguageSwitcher from "@/components/ui/LanguageSwitcher";
+import { useAppTranslation } from "@/components/ui/Language";
 
 export default function Home() {
   const router = useRouter();
+  const t = useAppTranslation();
 
   return (
     <main className="app-shell text-[color:var(--foreground)]">
@@ -22,12 +25,13 @@ export default function Home() {
         </button>
 
         <div className="flex items-center gap-2">
+          <LanguageSwitcher className="inline-flex h-10 items-center gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--surface)] px-3 text-sm text-[color:var(--muted)] transition hover:bg-[color:var(--surface-muted)] hover:text-[color:var(--foreground)]" />
           <ThemeToggle className="icon-btn h-10 w-10 border border-[color:var(--border)] bg-[color:var(--surface)]" />
           <button type="button" onClick={() => router.push("/login")} className="btn-secondary px-4 hover:-translate-y-0.5 hover:shadow-md hover:shadow-black/10 dark:hover:shadow-black/30">
-            Sign in
+            {t("signIn")}
           </button>
           <button type="button" onClick={() => router.push("/signup")} className="btn-primary px-4 hover:-translate-y-0.5 hover:shadow-md hover:shadow-black/10 dark:hover:shadow-black/30">
-            Start
+            {t("start")}
             <ArrowRight size={16} />
           </button>
         </div>
@@ -36,19 +40,19 @@ export default function Home() {
       <section className="mx-auto flex min-h-[calc(100vh-88px)] w-full max-w-6xl flex-col items-center justify-center px-5 pb-10 pt-8 text-center">
         <div className="max-w-3xl">
           <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl lg:text-6xl">
-            A cleaner workspace for focused AI conversations.
+            {t("homeHeroTitle")}
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-base leading-7 text-[color:var(--muted)] sm:text-lg">
-            Start chats quickly, switch between Gemini and LLaMA models, and keep your conversation history organized in one responsive interface.
+            {t("homeHeroDescription")}
           </p>
 
           <div className="mt-8 flex flex-wrap justify-center gap-3">
             <button type="button" onClick={() => router.push("/signup")} className="btn-primary px-5 hover:-translate-y-0.5 hover:shadow-md hover:shadow-black/10 dark:hover:shadow-black/30">
-              Create account
+              {t("createAccount")}
               <ArrowRight size={17} />
             </button>
             <button type="button" onClick={() => router.push("/login")} className="btn-secondary px-5 hover:-translate-y-0.5 hover:shadow-md hover:shadow-black/10 dark:hover:shadow-black/30">
-              Sign in
+              {t("signIn")}
             </button>
           </div>
         </div>
@@ -56,18 +60,18 @@ export default function Home() {
         <div className="mt-12 grid w-full max-w-4xl gap-3 text-left sm:grid-cols-3">
           <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--surface)] p-4 transition duration-200 hover:-translate-y-1 hover:border-[color:var(--accent)] hover:shadow-lg hover:shadow-black/10 dark:hover:shadow-black/30">
             <ShieldCheck size={18} className="mb-3 text-[color:var(--accent)]" />
-            <h2 className="font-semibold">Secure sessions</h2>
-            <p className="mt-2 text-sm leading-6 text-[color:var(--muted)]">Your chats stay tied to your account.</p>
+            <h2 className="font-semibold">{t("homeFeatureSecureTitle")}</h2>
+            <p className="mt-2 text-sm leading-6 text-[color:var(--muted)]">{t("homeFeatureSecureDescription")}</p>
           </div>
           <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--surface)] p-4 transition duration-200 hover:-translate-y-1 hover:border-[color:var(--accent)] hover:shadow-lg hover:shadow-black/10 dark:hover:shadow-black/30">
             <Sparkles size={18} className="mb-3 text-[color:var(--accent)]" />
-            <h2 className="font-semibold">Model choice</h2>
-            <p className="mt-2 text-sm leading-6 text-[color:var(--muted)]">Use Gemini or LLaMA from one clean composer.</p>
+            <h2 className="font-semibold">{t("homeFeatureModelTitle")}</h2>
+            <p className="mt-2 text-sm leading-6 text-[color:var(--muted)]">{t("homeFeatureModelDescription")}</p>
           </div>
           <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--surface)] p-4 transition duration-200 hover:-translate-y-1 hover:border-[color:var(--accent)] hover:shadow-lg hover:shadow-black/10 dark:hover:shadow-black/30">
             <MessageSquareText size={18} className="mb-3 text-[color:var(--accent)]" />
-            <h2 className="font-semibold">Saved threads</h2>
-            <p className="mt-2 text-sm leading-6 text-[color:var(--muted)]">Find, rename, archive, and revisit conversations.</p>
+            <h2 className="font-semibold">{t("homeFeatureSavedTitle")}</h2>
+            <p className="mt-2 text-sm leading-6 text-[color:var(--muted)]">{t("homeFeatureSavedDescription")}</p>
           </div>
         </div>
       </section>

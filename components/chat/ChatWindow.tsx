@@ -1,17 +1,26 @@
 "use client";
 
 import {
+  AlignLeft,
+  BookOpen,
   Bot,
+  Brain,
   Camera,
+  ChartLine,
   Check,
   Copy,
   FileText,
   Image as ImageIcon,
+  Languages,
+  Lightbulb,
   Mic,
   MicOff,
   Paperclip,
+  PenLine,
+  Search,
   Send,
   Sparkles,
+  Type,
   User,
   X,
 } from "lucide-react";
@@ -19,6 +28,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import ThemeToggle from "@/components/ui/ThemeToggle";
+import { useAppTranslation } from "@/components/ui/Language";
 
 type Attachment = {
   id: string;
@@ -169,6 +179,8 @@ export default function ChatWindow({
   const [speechSupported, setSpeechSupported] = useState(false);
   const [listening, setListening] = useState(false);
   const [chatScrolled, setChatScrolled] = useState(false);
+  const [quickActionsOpen, setQuickActionsOpen] = useState(false);
+  const t = useAppTranslation();
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -273,13 +285,13 @@ export default function ChatWindow({
       const nextAttachments = await Promise.all(
         files.map(async (file) => {
           if (file.size > 12 * 1024 * 1024) {
-            throw new Error(`${file.name} is larger than the 12 MB attachment limit.`);
+            throw new Error(`${file.name} ${t("attachmentTooLarge")}`);
           }
 
           const isImage = file.type.startsWith("image/");
           const attachment: Attachment = {
             id: crypto.randomUUID(),
-            name: file.name || (isImage ? "Camera photo" : "Document"),
+            name: file.name || (isImage ? t("cameraPhoto") : t("document")),
             type: file.type || "application/octet-stream",
             size: file.size,
             kind: isImage ? "image" : "document",
@@ -301,7 +313,7 @@ export default function ChatWindow({
 
       setAttachments((current) => [...current, ...nextAttachments].slice(0, 8));
     } catch (error) {
-      setAttachmentError(error instanceof Error ? error.message : "Could not attach that file.");
+      setAttachmentError(error instanceof Error ? error.message : t("couldNotAttachFile"));
     }
   };
 
@@ -338,7 +350,7 @@ export default function ChatWindow({
     const speechWindow = window as SpeechWindow;
     const SpeechRecognitionApi = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
     if (!SpeechRecognitionApi) {
-      setVoiceError("Voice input is not supported in this browser.");
+      setVoiceError(t("voiceUnsupported"));
       return;
     }
 
@@ -361,7 +373,7 @@ export default function ChatWindow({
       };
 
       recognition.onerror = (event) => {
-        setVoiceError(event.error === "not-allowed" ? "Microphone permission was denied." : "Voice input stopped.");
+        setVoiceError(event.error === "not-allowed" ? t("microphoneDenied") : t("voiceInputStopped"));
         setListening(false);
       };
 
@@ -376,7 +388,7 @@ export default function ChatWindow({
       playVoiceTone("start");
       textareaRef.current?.focus();
     } catch {
-      setVoiceError("Could not start voice input.");
+      setVoiceError(t("couldNotStartVoiceInput"));
       setListening(false);
     }
   };
@@ -405,17 +417,31 @@ export default function ChatWindow({
   };
 
   const formatReply = (data: ChatResponse) => {
-    const reply = data.reply || data.error || "No response from AI";
+    const reply = data.reply || data.error || t("noResponseFromAi");
     if (!data.fallbackFrom) return reply;
 
     const reason = data.fallbackError?.message
       ? ` ${data.fallbackError.message}`
       : "";
 
-    return `Note: ${modelLabel(data.fallbackFrom)} was unavailable.${reason} Answered with ${modelLabel(data.model || model)} instead.\n\n${reply}`;
+    return `${t("fallbackNotice")} ${modelLabel(data.fallbackFrom)} ${t("fallbackUnavailable")}.${reason} ${t("answeredWith")} ${modelLabel(data.model || model)} ${t("instead")}.\n\n${reply}`;
   };
 
   const hasConversation = messages.length > 0;
+  const quickActions = [
+    { label: t("helpMeWrite"), prompt: `${t("helpMeWrite")} `, icon: PenLine },
+    { label: t("learnAbout"), prompt: `${t("learnAbout")} `, icon: BookOpen },
+    { label: t("analyzeImage"), prompt: `${t("analyzeImage")}: `, icon: Search },
+    { label: t("summarizeText"), prompt: `${t("summarizeText")}: `, icon: AlignLeft },
+    { label: t("analyzeData"), prompt: `${t("analyzeData")}: `, icon: ChartLine },
+    { label: t("brainstorm"), prompt: `${t("brainstorm")} `, icon: Brain },
+    { label: t("improveWriting"), prompt: `${t("improveWriting")}: `, icon: Type },
+    { label: t("translate"), prompt: `${t("translate")}: `, icon: Languages },
+    { label: t("generateImages"), prompt: `${t("generateImages")} `, icon: ImageIcon },
+    { label: t("generateIdeas"), prompt: `${t("generateIdeas")} `, icon: Lightbulb },
+  ];
+  const visibleQuickActions = quickActions.slice(0, 4);
+  const hiddenQuickActions = quickActions.slice(4);
 
   const LoadingDots = () => (
     <span className="inline-flex items-center gap-1 py-1">
@@ -430,7 +456,7 @@ export default function ChatWindow({
     </span>
   );
 
-  const renderComposer = () => (
+  const renderComposer = (showQuickActions = false) => (
     <div className="mx-auto w-full max-w-3xl px-4">
       {attachmentError && (
         <p className="mb-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-600 dark:text-red-300">
@@ -451,7 +477,7 @@ export default function ChatWindow({
               <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-500" />
             </span>
           )}
-          <span>{voiceError || "Listening... speak naturally, then tap the mic to stop."}</span>
+          <span>{voiceError || t("listeningMessage")}</span>
         </div>
       )}
 
@@ -469,7 +495,7 @@ export default function ChatWindow({
                 type="button"
                 onClick={() => removeAttachment(attachment.id)}
                 className="rounded-sm p-0.5 hover:bg-[color:var(--surface-muted)] hover:text-[color:var(--foreground)]"
-                title={`Remove ${attachment.name}`}
+                title={`${t("removeAttachment")} ${attachment.name}`}
               >
                 <X size={12} />
               </button>
@@ -482,14 +508,14 @@ export default function ChatWindow({
         layout
         layoutId="chat-composer"
         transition={{ layout: { duration: 0.52, ease: [0.22, 1, 0.36, 1] } }}
-        className="group flex items-end gap-2 rounded-2xl border border-[color:var(--border)] bg-[color:var(--surface)] p-2 shadow-[0_18px_60px_rgba(15,23,42,0.14)] transition duration-200 focus-within:scale-[1.01] focus-within:border-[color:var(--accent)] dark:shadow-[0_18px_60px_rgba(0,0,0,0.35)]"
+        className="group flex items-end gap-2 rounded-2xl border border-[color:var(--border)] bg-[color:var(--surface)] p-2 shadow-[var(--composer-shadow)] transition duration-200 focus-within:border-[color:var(--accent)]"
       >
         <div className="relative shrink-0">
           <button
             type="button"
             onClick={() => setAttachMenuOpen((open) => !open)}
             className="icon-btn shrink-0"
-            title="Attach"
+            title={t("attach")}
             aria-expanded={attachMenuOpen}
             aria-haspopup="menu"
           >
@@ -504,7 +530,7 @@ export default function ChatWindow({
                 role="menuitem"
               >
                 <ImageIcon size={16} />
-                Photos
+                {t("photos")}
               </button>
               <button
                 type="button"
@@ -513,7 +539,7 @@ export default function ChatWindow({
                 role="menuitem"
               >
                 <FileText size={16} />
-                Document
+                {t("document")}
               </button>
               <button
                 type="button"
@@ -522,7 +548,7 @@ export default function ChatWindow({
                 role="menuitem"
               >
                 <Camera size={16} />
-                Camera
+                {t("camera")}
               </button>
             </div>
           )}
@@ -570,7 +596,7 @@ export default function ChatWindow({
               sendMessage();
             }
           }}
-          placeholder="Message RVK"
+          placeholder={t("messagePlaceholder")}
           rows={1}
           className="max-h-44 min-h-11 flex-1 resize-none bg-transparent px-2 py-2.5 text-sm leading-6 outline-none placeholder:text-[color:var(--muted)]"
         />
@@ -583,7 +609,7 @@ export default function ChatWindow({
               ? "border-red-500/40 bg-red-500/10 text-red-600 shadow-[0_0_0_4px_rgba(239,68,68,0.08)] hover:bg-red-500/15 dark:text-red-300"
               : "border-transparent text-[color:var(--muted)] hover:bg-[color:var(--surface-muted)] hover:text-[color:var(--foreground)]"
           }`}
-          title={speechSupported ? (listening ? "Stop voice input" : "Start voice input") : "Voice input is not supported"}
+          title={speechSupported ? (listening ? t("stopVoiceInput") : t("startVoiceInput")) : t("voiceUnsupported")}
           aria-pressed={listening}
         >
           {listening && <span className="absolute inset-1 rounded-lg border border-red-500/30 animate-pulse" />}
@@ -596,11 +622,44 @@ export default function ChatWindow({
           onClick={sendMessage}
           disabled={(!input.trim() && attachments.length === 0) || sending}
           className="btn-primary h-11 min-h-11 w-11 rounded-xl px-0"
-          title="Send message"
+          title={t("sendMessage")}
         >
           <Send size={17} />
         </button>
       </motion.div>
+
+      {showQuickActions && (
+        <div className="mt-5 flex flex-wrap justify-center gap-2">
+          {[...visibleQuickActions, ...(quickActionsOpen ? hiddenQuickActions : [])].map((action) => {
+            const Icon = action.icon;
+            return (
+              <button
+                key={action.label}
+                type="button"
+                onClick={() => {
+                  setInput(action.prompt);
+                  window.setTimeout(() => textareaRef.current?.focus(), 0);
+                }}
+                className="inline-flex min-h-9 items-center gap-2 rounded-full border border-[color:var(--border)] bg-[color:var(--surface)] px-3.5 text-sm font-medium text-[color:var(--foreground)] shadow-sm transition hover:border-[color:var(--accent)] hover:text-[color:var(--accent)]"
+              >
+                <Icon size={16} />
+                {action.label}
+              </button>
+            );
+          })}
+          {hiddenQuickActions.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setQuickActionsOpen((open) => !open)}
+              className="inline-flex min-h-9 items-center gap-2 rounded-full border border-[color:var(--border)] bg-[color:var(--surface)] px-3.5 text-sm font-medium text-[color:var(--foreground)] shadow-sm transition hover:border-[color:var(--accent)] hover:text-[color:var(--accent)]"
+              aria-expanded={quickActionsOpen}
+            >
+              <Sparkles size={16} />
+              {quickActionsOpen ? t("seeLess") : t("seeMore")}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 
@@ -623,10 +682,10 @@ export default function ChatWindow({
       ...prev,
       {
         role: "user",
-        content: trimmed || "Please analyze the attached file.",
+        content: trimmed || t("analyzeAttachedFile"),
         attachments: attachmentsToSend.map(publicAttachment),
       },
-      { role: "assistant", content: "Thinking..." },
+      { role: "assistant", content: t("thinking") },
     ]);
 
     try {
@@ -634,7 +693,7 @@ export default function ChatWindow({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          message: trimmed || "Please analyze the attached file.",
+          message: trimmed || t("analyzeAttachedFile"),
           chatId: finalChatId,
           model,
           attachments: attachmentsToSend.map(outboundAttachment),
@@ -662,7 +721,7 @@ export default function ChatWindow({
         const updated = [...prev];
         updated[updated.length - 1] = {
           role: "assistant",
-          content: error instanceof Error ? error.message : "Failed to connect to AI API",
+          content: error instanceof Error ? error.message : t("failedToConnectAi"),
         };
         return updated;
       });
@@ -700,27 +759,27 @@ export default function ChatWindow({
         {!hasConversation && (
           <motion.div
             key="welcome"
-            className="absolute inset-0 px-4"
+            className="absolute inset-x-0 bottom-0 top-16 flex items-center justify-center overflow-y-auto px-4 py-8"
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -24 }}
             transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
           >
-            <div className="pointer-events-none absolute inset-x-4 top-[calc(50%-190px)]">
+            <div className="w-full">
               <div className="mx-auto max-w-3xl text-center">
                 <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-[color:var(--surface-muted)] text-[color:var(--accent)] shadow-sm">
                   <Bot size={23} />
                 </div>
                 <h2 className="mt-5 text-2xl font-semibold tracking-normal text-[color:var(--foreground)] sm:text-3xl">
-                  What are we working on?
+                  {t("welcomeTitle")}
                 </h2>
                 <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-[color:var(--muted)]">
-                  Ask anything, attach files, or continue from a saved thread.
+                  {t("welcomeDescription")}
                 </p>
               </div>
-            </div>
-            <div className="absolute inset-x-0 top-1/2 -translate-y-1/2">
-              {renderComposer()}
+              <div className="mt-8">
+                {renderComposer(true)}
+              </div>
             </div>
           </motion.div>
         )}
@@ -737,7 +796,7 @@ export default function ChatWindow({
           <AnimatePresence initial={false}>
             {messages.map((msg, index) => {
               const isUser = msg.role === "user";
-              const isThinking = !isUser && msg.content === "Thinking...";
+              const isThinking = !isUser && msg.content === t("thinking");
               return (
                 <motion.div
                   key={`${msg._id || index}`}
@@ -795,7 +854,7 @@ export default function ChatWindow({
                         className="mt-1 inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-[color:var(--muted)] opacity-0 transition hover:bg-[color:var(--surface-muted)] hover:text-[color:var(--foreground)] group-hover:opacity-100"
                       >
                         {copiedIndex === index ? <Check size={13} /> : <Copy size={13} />}
-                        {copiedIndex === index ? "Copied" : "Copy"}
+                        {copiedIndex === index ? t("copied") : t("copy")}
                       </button>
                     )}
                   </div>

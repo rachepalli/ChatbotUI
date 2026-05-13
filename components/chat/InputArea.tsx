@@ -2,6 +2,7 @@
 
 import { Paperclip, Send } from "lucide-react";
 import { KeyboardEvent, useEffect, useRef, useState } from "react";
+import { useAppTranslation } from "@/components/ui/Language";
 
 type InputAreaProps = {
   onSend: (text: string) => void;
@@ -11,6 +12,7 @@ type InputAreaProps = {
 export default function InputArea({ onSend, disabled }: InputAreaProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const t = useAppTranslation();
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -35,7 +37,7 @@ export default function InputArea({ onSend, disabled }: InputAreaProps) {
 
   return (
     <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--background)] p-2">
-      <button type="button" className="icon-btn shrink-0" title="Attach file">
+      <button type="button" className="icon-btn shrink-0" title={t("attachFile")}>
         <Paperclip size={18} />
       </button>
       <textarea
@@ -43,12 +45,12 @@ export default function InputArea({ onSend, disabled }: InputAreaProps) {
         value={input}
         onChange={(e) => setInput(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder="Message RVK"
+        placeholder={t("messagePlaceholder")}
         disabled={disabled}
         rows={1}
         className="max-h-44 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-sm outline-none placeholder:text-[color:var(--muted)]"
       />
-      <button type="button" onClick={handleSend} disabled={!input.trim() || disabled} className="btn-primary h-10 min-h-10 w-10 px-0" title="Send message">
+      <button type="button" onClick={handleSend} disabled={!input.trim() || disabled} className="btn-primary h-10 min-h-10 w-10 px-0" title={t("sendMessage")}>
         <Send size={17} />
       </button>
     </div>

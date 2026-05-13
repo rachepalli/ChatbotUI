@@ -3,6 +3,8 @@
 import { ArrowLeft, Bot, Loader2, Mail } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import LanguageSwitcher from "@/components/ui/LanguageSwitcher";
+import { useAppTranslation } from "@/components/ui/Language";
 
 export default function ForgotPasswordPage() {
   const router = useRouter();
@@ -10,13 +12,14 @@ export default function ForgotPasswordPage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const t = useAppTranslation();
 
   const handleForgotPassword = async () => {
     setError("");
     setMessage("");
 
     if (!email) {
-      setError("Enter your email address.");
+      setError(t("enterEmailAddress"));
       return;
     }
 
@@ -31,12 +34,12 @@ export default function ForgotPasswordPage() {
       const data = await res.json();
 
       if (!res.ok) {
-        setError(data.error || "Could not send reset link.");
+        setError(data.error || t("couldNotSendResetLink"));
       } else {
-        setMessage(data.message || "If an account exists, a reset link has been sent.");
+        setMessage(data.message || t("ifAccountExistsResetSent"));
       }
     } catch {
-      setError("Something went wrong. Please try again.");
+      setError(t("somethingWentWrong"));
     } finally {
       setLoading(false);
     }
@@ -44,6 +47,7 @@ export default function ForgotPasswordPage() {
 
   return (
     <main className="auth-shell">
+      <LanguageSwitcher />
       <section className="auth-panel">
         <button type="button" onClick={() => router.push("/")} className="mb-8 flex items-center gap-2 font-semibold">
           <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[color:var(--accent)] text-white">
@@ -52,15 +56,15 @@ export default function ForgotPasswordPage() {
           RVK
         </button>
 
-        <h1 className="text-3xl font-semibold tracking-tight">Reset your password</h1>
+        <h1 className="text-3xl font-semibold tracking-tight">{t("resetPasswordTitle")}</h1>
         <p className="mt-2 text-sm leading-6 text-[color:var(--muted)]">
-          Enter your account email and we will send a reset link if the account exists.
+          {t("forgotPasswordDescription")}
         </p>
 
         <div className="mt-7">
           <input
             type="email"
-            placeholder="Email address"
+            placeholder={t("emailAddress")}
             className="field"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -84,12 +88,12 @@ export default function ForgotPasswordPage() {
 
         <button type="button" onClick={handleForgotPassword} disabled={loading} className="btn-primary mt-5 w-full">
           {loading ? <Loader2 size={17} className="animate-spin" /> : <Mail size={17} />}
-          {loading ? "Sending link" : "Send reset link"}
+          {loading ? t("sendingLink") : t("sendResetLink")}
         </button>
 
         <button type="button" onClick={() => router.push("/login")} className="btn-ghost mt-4 w-full">
           <ArrowLeft size={16} />
-          Back to sign in
+          {t("backToSignIn")}
         </button>
       </section>
     </main>

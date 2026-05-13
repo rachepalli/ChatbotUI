@@ -2,6 +2,7 @@
 
 import { Moon, Sun } from "lucide-react";
 import { useSyncExternalStore } from "react";
+import { useAppTranslation } from "@/components/ui/Language";
 
 export type Theme = "light" | "dark";
 
@@ -52,6 +53,7 @@ export function useTheme() {
 
 export default function ThemeToggle({ className }: ThemeToggleProps) {
   const theme = useTheme();
+  const t = useAppTranslation();
 
   const handleToggle = () => {
     const nextTheme = theme === "dark" ? "light" : "dark";
@@ -62,12 +64,12 @@ export default function ThemeToggle({ className }: ThemeToggleProps) {
     <button
       type="button"
       onClick={handleToggle}
-      aria-label="Toggle dark mode"
+      aria-label={t("toggleDarkMode")}
       className={
         className ||
         "fixed right-4 top-4 z-[70] inline-flex h-10 w-10 items-center justify-center rounded-lg border border-[color:var(--border)] bg-[color:var(--surface)] text-[color:var(--muted)] shadow-md backdrop-blur transition hover:bg-[color:var(--surface-muted)] hover:text-[color:var(--foreground)]"
       }
-      title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      title={theme === "dark" ? t("switchToLight") : t("switchToDark")}
     >
       {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
     </button>

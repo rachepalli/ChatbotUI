@@ -70,6 +70,20 @@ export const authOptions: AuthOptions = {
   ],
 
   callbacks: {
+    async jwt({ token, user, trigger, session }) {
+      if (user) {
+        token.name = user.name;
+        token.email = user.email;
+      }
+
+      if (trigger === "update" && session?.user) {
+        if (typeof session.user.name === "string") token.name = session.user.name;
+        if (typeof session.user.email === "string") token.email = session.user.email;
+      }
+
+      return token;
+    },
+
     async signIn({ user, account }) {
       await connectToDatabase();
 
@@ -89,8 +103,13 @@ export const authOptions: AuthOptions = {
       return true;
     },
 
-    async session({ session }) {
+    async session({ session, token }) {
       await connectToDatabase();
+
+      if (session.user) {
+        if (typeof token.name === "string") session.user.name = token.name;
+        if (typeof token.email === "string") session.user.email = token.email;
+      }
 
       if (!session.user?.email) return session;
 

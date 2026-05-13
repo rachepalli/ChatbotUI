@@ -3,6 +3,8 @@
 import { Bot, CheckCircle2, Loader2, LockKeyhole } from "lucide-react";
 import { Suspense, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import LanguageSwitcher from "@/components/ui/LanguageSwitcher";
+import { useAppTranslation } from "@/components/ui/Language";
 
 function ResetPasswordForm() {
   const router = useRouter();
@@ -14,23 +16,24 @@ function ResetPasswordForm() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const t = useAppTranslation();
 
   const handleResetPassword = async () => {
     setError("");
     setMessage("");
 
     if (!token) {
-      setError("This reset link is missing a token.");
+      setError(t("missingResetToken"));
       return;
     }
 
     if (!password || password.length < 6) {
-      setError("Use at least 6 characters for your new password.");
+      setError(t("passwordMinLengthNew"));
       return;
     }
 
     if (password !== confirmPassword) {
-      setError("Passwords do not match.");
+      setError(t("passwordsDoNotMatch"));
       return;
     }
 
@@ -45,13 +48,13 @@ function ResetPasswordForm() {
       const data = await res.json();
 
       if (!res.ok) {
-        setError(data.error || "Unable to reset password.");
+        setError(data.error || t("unableToResetPassword"));
       } else {
-        setMessage("Password reset successful. Redirecting to sign in...");
+        setMessage(t("passwordResetSuccessful"));
         setTimeout(() => router.push("/login"), 1200);
       }
     } catch {
-      setError("Something went wrong. Please try again.");
+      setError(t("somethingWentWrong"));
     } finally {
       setLoading(false);
     }
@@ -59,6 +62,7 @@ function ResetPasswordForm() {
 
   return (
     <main className="auth-shell">
+      <LanguageSwitcher />
       <section className="auth-panel">
         <button type="button" onClick={() => router.push("/")} className="mb-8 flex items-center gap-2 font-semibold">
           <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[color:var(--accent)] text-white">
@@ -67,15 +71,15 @@ function ResetPasswordForm() {
           RVK
         </button>
 
-        <h1 className="text-3xl font-semibold tracking-tight">Choose a new password</h1>
+        <h1 className="text-3xl font-semibold tracking-tight">{t("chooseNewPassword")}</h1>
         <p className="mt-2 text-sm leading-6 text-[color:var(--muted)]">
-          Make it memorable, private, and at least 6 characters.
+          {t("makePasswordDescription")}
         </p>
 
         <div className="mt-7 space-y-3">
           <input
             type="password"
-            placeholder="New password"
+            placeholder={t("newPassword")}
             className="field"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
@@ -83,7 +87,7 @@ function ResetPasswordForm() {
           />
           <input
             type="password"
-            placeholder="Confirm new password"
+            placeholder={t("confirmNewPassword")}
             className="field"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
@@ -96,7 +100,7 @@ function ResetPasswordForm() {
 
         {password && (
           <p className={`mt-2 text-sm ${password.length >= 6 ? "text-emerald-600 dark:text-emerald-300" : "text-amber-600 dark:text-amber-300"}`}>
-            {password.length >= 6 ? "Password length looks good." : "Use at least 6 characters."}
+            {password.length >= 6 ? t("passwordLengthGood") : t("passwordMinLength")}
           </p>
         )}
 
@@ -114,7 +118,7 @@ function ResetPasswordForm() {
 
         <button type="button" onClick={handleResetPassword} disabled={loading} className="btn-primary mt-5 w-full">
           {loading ? <Loader2 size={17} className="animate-spin" /> : <LockKeyhole size={17} />}
-          {loading ? "Resetting password" : "Reset password"}
+          {loading ? t("resettingPassword") : t("resetPassword")}
         </button>
       </section>
     </main>
