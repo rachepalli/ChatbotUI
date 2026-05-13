@@ -20,8 +20,10 @@ export default function SignupPage() {
 
   const handleSignup = async () => {
     setError("");
+    const trimmedName = name.trim();
+    const normalizedEmail = email.trim().toLowerCase();
 
-    if (!name || !email || !password || !confirmPassword) {
+    if (!trimmedName || !normalizedEmail || !password || !confirmPassword) {
       setError(t("fillAllFields"));
       return;
     }
@@ -41,7 +43,7 @@ export default function SignupPage() {
     const res = await fetch("/api/signup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email, password }),
+      body: JSON.stringify({ name: trimmedName, email: normalizedEmail, password }),
     });
     const data = await res.json();
 
@@ -52,7 +54,7 @@ export default function SignupPage() {
     }
 
     const loginRes = await signIn("credentials", {
-      email,
+      email: normalizedEmail,
       password,
       redirect: false,
     });

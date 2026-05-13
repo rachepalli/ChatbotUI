@@ -41,7 +41,7 @@ export const authOptions: AuthOptions = {
 
       async authorize(credentials) {
         await connectToDatabase();
-        const email = credentials?.email;
+        const email = credentials?.email?.trim().toLowerCase();
         const password = credentials?.password;
 
         if (!email || !password) {
