@@ -1,36 +1,228 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# RVK Chatbot UI
 
-## Getting Started
+A Next.js chatbot application with authentication, chat history, RAG search, localization, and optional local microservices.
 
-First, run the development server:
+## Tech Stack
+
+- Next.js 16
+- React 19
+- TypeScript
+- MongoDB / Mongoose
+- NextAuth
+- Tailwind CSS
+- Groq / Gemini / OpenAI-compatible AI integrations
+- Optional microservices for auth, thread, chat, LLM, and RAG
+
+## Requirements
+
+Install these before running the project:
+
+- Node.js 20 or newer
+- npm
+- MongoDB Atlas connection string or local MongoDB
+- API keys for the AI providers you want to use
+- Docker Desktop, only if running the microservices setup
+
+## Environment Variables
+
+Create a `.env.local` file in the project root.
+
+```env
+MONGODB_URI=your_mongodb_connection_string
+
+NEXTAUTH_SECRET=your_random_secret
+NEXTAUTH_URL=http://localhost:3000
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+
+GOOGLE_CLIENT_ID=your_google_client_id
+GOOGLE_CLIENT_SECRET=your_google_client_secret
+
+GITHUB_ID=your_github_oauth_client_id
+GITHUB_SECRET=your_github_oauth_client_secret
+
+GROQ_API_KEY=your_groq_api_key
+GOOGLE_GENERATIVE_AI_API_KEY=your_google_generative_ai_key
+GEMINI_EMBEDDING_MODEL=text-embedding-004
+
+OPENAI_API_KEY=your_openai_api_key
+TAVILY_API_KEY=your_tavily_api_key
+
+NEXT_PUBLIC_TOLGEE_API_KEY=your_tolgee_api_key
+NEXT_PUBLIC_TOLGEE_API_URL=your_tolgee_api_url
+
+SMTP_HOST=your_smtp_host
+SMTP_PORT=587
+SMTP_USER=your_smtp_user
+SMTP_PASS=your_smtp_password
+SMTP_FROM=your_from_email
+```
+
+Optional microservice variables:
+
+```env
+API_GATEWAY_URL=http://localhost:8080
+AUTH_SERVICE_URL=http://localhost:4001
+LLM_SERVICE_URL=http://localhost:4004
+RAG_SERVICE_URL=http://localhost:4005
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+For normal Vercel deployment, do not set `API_GATEWAY_URL` or `AUTH_SERVICE_URL` unless those services are deployed somewhere public. The app can use the built-in Next.js API route fallback for signup.
+
+## Install
+
+```bash
+npm install
+```
+
+## Run Locally
+
+Start the Next.js app:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```text
+http://localhost:3000
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Build
 
-## Learn More
+```bash
+npm run build
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Start Production Build Locally
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npm run build
+npm run start
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Lint
 
-## Deploy on Vercel
+```bash
+npm run lint
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Run With Local Microservices
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Install service dependencies:
+
+```bash
+npm run setup:microservices
+```
+
+Start only the microservices:
+
+```bash
+npm run dev:microservices
+```
+
+Start microservices and Next.js together:
+
+```bash
+npm run dev:all
+```
+
+Run service health checks:
+
+```bash
+npm run smoke:microservices
+```
+
+Main local service URLs:
+
+```text
+API Gateway: http://localhost:8080
+Auth Service: http://localhost:4001
+Thread Service: http://localhost:4002
+Chat Service: http://localhost:4003
+LLM Service: http://localhost:4004
+RAG Service: http://localhost:4005
+```
+
+## Run Microservices With Docker
+
+```bash
+docker compose -f docker-compose.microservices.yml up
+```
+
+To stop:
+
+```bash
+docker compose -f docker-compose.microservices.yml down
+```
+
+## Vercel Deployment
+
+Add these environment variables in Vercel Project Settings:
+
+```env
+MONGODB_URI=your_mongodb_connection_string
+NEXTAUTH_SECRET=your_random_secret
+NEXTAUTH_URL=https://your-vercel-domain.vercel.app
+NEXT_PUBLIC_APP_URL=https://your-vercel-domain.vercel.app
+
+GOOGLE_CLIENT_ID=your_google_client_id
+GOOGLE_CLIENT_SECRET=your_google_client_secret
+GITHUB_ID=your_github_oauth_client_id
+GITHUB_SECRET=your_github_oauth_client_secret
+
+GROQ_API_KEY=your_groq_api_key
+GOOGLE_GENERATIVE_AI_API_KEY=your_google_generative_ai_key
+GEMINI_EMBEDDING_MODEL=text-embedding-004
+OPENAI_API_KEY=your_openai_api_key
+TAVILY_API_KEY=your_tavily_api_key
+
+NEXT_PUBLIC_TOLGEE_API_KEY=your_tolgee_api_key
+NEXT_PUBLIC_TOLGEE_API_URL=your_tolgee_api_url
+
+SMTP_HOST=your_smtp_host
+SMTP_PORT=587
+SMTP_USER=your_smtp_user
+SMTP_PASS=your_smtp_password
+SMTP_FROM=your_from_email
+```
+
+After adding environment variables, redeploy the project.
+
+If MongoDB Atlas is used, make sure Network Access allows Vercel to connect. For quick testing, allow:
+
+```text
+0.0.0.0/0
+```
+
+## Git Workflow
+
+Use `main` as the primary branch.
+
+```bash
+git status
+git add .
+git commit -m "Your message"
+git push origin main
+```
+
+## Project Structure
+
+```text
+app/                  Next.js app routes and API routes
+components/           UI and chat components
+lib/                  Shared helpers, database, email, service proxy
+models/               Mongoose models
+services/             Optional microservices
+scripts/              Local microservice setup and smoke test scripts
+public/               Static assets
+```
+
+## Notes
+
+- `.env.local` is not committed to GitHub.
+- Vercel needs environment variables added manually in the dashboard.
+- Signup requires a working `MONGODB_URI`.
+- Login requires `NEXTAUTH_SECRET` and `NEXTAUTH_URL`.
+- OAuth login requires valid Google/GitHub callback URLs.
