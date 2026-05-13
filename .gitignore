@@ -33,6 +33,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+.next-dev.err
+.next-dev.out
+.rag-service-test.err
+.rag-service-test.out
 
 # env files (can opt-in for committing if needed)
 .env*

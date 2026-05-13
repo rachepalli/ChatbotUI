@@ -4,11 +4,27 @@ import { proxyJson } from "@/lib/http/service-proxy";
 import { connectToDatabase } from "@/lib/mongodb";
 import User from "@/models/User";
 
-const gatewayUrl = process.env.API_GATEWAY_URL || "http://localhost:8080";
-const authServiceUrl = process.env.AUTH_SERVICE_URL || "http://localhost:4001";
+const gatewayUrl = process.env.API_GATEWAY_URL;
+const authServiceUrl = process.env.AUTH_SERVICE_URL;
 
 function normalizeEmail(email: unknown) {
   return typeof email === "string" ? email.trim().toLowerCase() : "";
+}
+
+async function tryProxySignup(baseUrl: string | undefined, path: string, body: unknown) {
+  if (!baseUrl) return null;
+
+  try {
+    return await proxyJson({
+      baseUrl,
+      path,
+      method: "POST",
+      body,
+    });
+  } catch (error) {
+    console.error(`Signup proxy failed for ${path}`, error);
+    return null;
+  }
 }
 
 async function signupLocally(body: unknown) {
@@ -51,25 +67,10 @@ export async function POST(req: Request) {
   try {
     body = await req.json();
 
-    let response;
-    try {
-      response = await proxyJson({
-        baseUrl: gatewayUrl,
-        path: "/api/signup",
-        method: "POST",
-        body,
-      });
-    } catch {
-      response = null;
-    }
+    let response = await tryProxySignup(gatewayUrl, "/api/signup", body);
 
     if (!response || response.status === 404 || response.status === 502) {
-      response = await proxyJson({
-        baseUrl: authServiceUrl,
-        path: "/signup",
-        method: "POST",
-        body,
-      });
+      response = await tryProxySignup(authServiceUrl, "/signup", body);
     }
 
     if (!response || response.status === 404 || response.status === 502) {
@@ -77,11 +78,14 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json(response.data, { status: response.status });
-  } catch {
+  } catch (error) {
+    console.error("Signup request failed", error);
+
     if (body !== undefined) {
       try {
         return await signupLocally(body);
-      } catch {
+      } catch (localError) {
+        console.error("Local signup failed", localError);
         return NextResponse.json({ error: "Signup failed" }, { status: 500 });
       }
     }
