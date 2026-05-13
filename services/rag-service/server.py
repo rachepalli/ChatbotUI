@@ -3,6 +3,8 @@ import json
 import math
 import os
 import re
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
@@ -27,7 +29,10 @@ SERVICE_NAME = os.getenv("SERVICE_NAME", "rag-service")
 MONGO_URI = os.getenv("MONGODB_URI")
 DB_NAME = os.getenv("MONGODB_DB")
 EMBEDDING_DIMENSIONS = int(os.getenv("RAG_EMBEDDING_DIMENSIONS", "768"))
-EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "agno-local-hash-embedding")
+EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001"))
+LOCAL_EMBEDDING_MODEL = "local-hash-embedding"
+LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL", "http://localhost:4004").rstrip("/")
+EMBEDDING_TIMEOUT_MS = int(os.getenv("RAG_EMBEDDING_TIMEOUT_MS", "15000"))
 CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "1200"))
 CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "180"))
 MAX_CHUNKS_PER_ATTACHMENT = int(os.getenv("RAG_MAX_CHUNKS_PER_ATTACHMENT", "80"))
@@ -105,6 +110,49 @@ def local_embedding(text: str) -> list[float]:
         sign = 1.0 if digest[4] % 2 == 0 else -1.0
         vector[index] += sign
     return normalize_vector(vector)
+
+
+def local_embedding_batch(texts: list[str]) -> tuple[list[list[float]], str]:
+    return [local_embedding(text) for text in texts], LOCAL_EMBEDDING_MODEL
+
+
+def service_embedding_batch(texts: list[str]) -> tuple[list[list[float]], str]:
+    if not texts:
+        return [], EMBEDDING_MODEL
+
+    payload = json.dumps(
+        {
+            "texts": texts,
+            "model": EMBEDDING_MODEL,
+            "dimensions": EMBEDDING_DIMENSIONS,
+            "timeoutMs": EMBEDDING_TIMEOUT_MS,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{LLM_SERVICE_URL}/embed",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=max(1, EMBEDDING_TIMEOUT_MS / 1000)) as response:
+            data = json.loads(response.read().decode("utf-8") or "{}")
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return local_embedding_batch(texts)
+
+    embeddings = data.get("embeddings") if isinstance(data, dict) else None
+    if not isinstance(embeddings, list) or len(embeddings) != len(texts):
+        return local_embedding_batch(texts)
+
+    return [normalize_vector(embedding) for embedding in embeddings], str(data.get("model") or EMBEDDING_MODEL)
+
+
+def embed_texts(texts: list[str]) -> tuple[list[list[float]], str]:
+    embeddings, model = service_embedding_batch(texts)
+    if len(embeddings) == len(texts):
+        return embeddings, model
+    return local_embedding_batch(texts)
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
@@ -230,6 +278,7 @@ class AgnoRagEngine:
             attachment_chunks = chunk_text(text)
             if not attachment_chunks:
                 continue
+            embeddings, embedding_model = embed_texts(attachment_chunks)
             chunks.delete_many({"userId": user_id, "threadId": thread_id, "attachmentId": current_attachment_id})
             for index, chunk in enumerate(attachment_chunks):
                 docs.append(
@@ -244,8 +293,8 @@ class AgnoRagEngine:
                         "chunkIndex": index,
                         "chunkText": chunk,
                         "tokenPreview": tokenize(chunk)[:80],
-                        "embedding": local_embedding(chunk),
-                        "embeddingModel": EMBEDDING_MODEL,
+                        "embedding": embeddings[index],
+                        "embeddingModel": embedding_model,
                         "embeddingDimensions": EMBEDDING_DIMENSIONS,
                         "createdAt": created_at,
                         "updatedAt": created_at,
@@ -310,7 +359,8 @@ class AgnoRagEngine:
             ]
 
         query_tokens = list(dict.fromkeys(tokenize(query)))[:40]
-        query_embedding = local_embedding(query)
+        query_embeddings, query_embedding_model = embed_texts([query])
+        query_embedding = query_embeddings[0] if query_embeddings else local_embedding(query)
         candidates: list[dict[str, Any]] = []
 
         if query_tokens:
@@ -332,6 +382,8 @@ class AgnoRagEngine:
         ranked = []
         for chunk in candidates:
             vector_score = cosine_similarity(query_embedding, chunk.get("embedding") or [])
+            if chunk.get("embeddingModel") and chunk.get("embeddingModel") != query_embedding_model:
+                vector_score *= 0.5
             relevance = float(chunk.get("score") or 0) + score_chunk(chunk, query_tokens) + vector_score * 20
             if relevance > 0:
                 chunk["vectorScore"] = vector_score
@@ -351,7 +403,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/health":
-            send_json(self, 200, {"ok": True, "service": SERVICE_NAME, "framework": "agno"})
+            send_json(
+                self,
+                200,
+                {
+                    "ok": True,
+                    "service": SERVICE_NAME,
+                    "framework": "agno",
+                    "embeddingModel": EMBEDDING_MODEL,
+                    "embeddingFallback": LOCAL_EMBEDDING_MODEL,
+                },
+            )
             return
         send_json(self, 404, {"error": "Not Found", "service": SERVICE_NAME})
 

@@ -70,11 +70,14 @@ services:
     container_name: myapp-rag-service
     working_dir: /app
     command: sh -c "pip install --no-cache-dir -r requirements.txt && python server.py"
+    depends_on:
+      - llm-service
     env_file:
       - ./.env.local
     environment:
       - PORT=4005
       - SERVICE_NAME=rag-service
+      - LLM_SERVICE_URL=http://llm-service:4004
     volumes:
       - ./services/rag-service:/app
     ports:

@@ -17,7 +17,7 @@ const services = [
   { name: "chat-service", dir: "services/chat-service", command: [process.execPath, "server.js"], env: { PORT: "4003", SERVICE_NAME: "chat-service", LLM_SERVICE_URL: process.env.LLM_SERVICE_URL || "http://localhost:4004", RAG_SERVICE_URL: process.env.RAG_SERVICE_URL || "http://localhost:4005" }, port: 4003 },
   { name: "llm-service", dir: "services/llm-service", command: [process.execPath, "server.js"], env: { PORT: "4004", SERVICE_NAME: "llm-service" }, port: 4004 },
   ragPythonCommand
-    ? { name: "rag-service", dir: "services/rag-service", command: [...ragPythonCommand, "server.py"], env: { PORT: "4005", SERVICE_NAME: "rag-service" }, port: 4005 }
+    ? { name: "rag-service", dir: "services/rag-service", command: [...ragPythonCommand, "server.py"], env: { PORT: "4005", SERVICE_NAME: "rag-service", LLM_SERVICE_URL: process.env.LLM_SERVICE_URL || "http://localhost:4004" }, port: 4005 }
     : null,
 ];
 
