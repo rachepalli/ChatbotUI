@@ -522,6 +522,43 @@ async function retrieveRagChunks(_database, { userId, threadId, query, limit = 6
   }
 }
 
+async function answerWithAgnoRag(_database, { userId, threadId, message, query, model, limit = 8, summaryMode = false, attachments = [], createdAt }) {
+  const ingestableAttachments = attachments
+    .filter((attachment) => attachment.text)
+    .map((attachment) => ({
+      name: attachment.name,
+      type: attachment.type,
+      size: attachment.size,
+      text: attachment.text,
+      attachmentId: attachmentId(attachment),
+    }));
+
+  const data = await callRagService(
+    "/answer",
+    {
+      userId,
+      threadId,
+      message,
+      query,
+      model,
+      limit,
+      summaryMode,
+      attachments: ingestableAttachments,
+      createdAt,
+    },
+    60000
+  );
+
+  return {
+    reply: String(data.reply || ""),
+    model: data.model || model || "unknown",
+    usage: data.usage || {},
+    sources: Array.isArray(data.sources) ? data.sources : [],
+    storedChunks: Number(data.storedChunks || 0),
+    error: data.error || null,
+  };
+}
+
 function isSummaryRequest(message) {
   return /\b(summarize|summary|overview|brief|explain\s+this|analyze\s+this|key\s+points|main\s+points)\b/i.test(
     String(message || "")
@@ -796,14 +833,6 @@ async function sendMessage(req, res) {
     updatedAt: now,
   });
 
-  const storedChunks = await storeRagChunks(database, {
-    userId,
-    threadId: chatId,
-    messageId: userMessageResult.insertedId?.toString(),
-    attachments: normalizedAttachments,
-    createdAt: now,
-  });
-
   const userMessageCount = await messages.countDocuments({
     threadId: chatId,
     userId,
@@ -826,35 +855,78 @@ async function sendMessage(req, res) {
   const summaryMode = isSummaryRequest(message);
   const useWebSearch = typeof webSearch === "boolean" ? webSearch : shouldUseWebSearch(message);
   const useRag = shouldUseRag(message, normalizedAttachments);
-  const ragChunks = useRag
-    ? await retrieveRagChunks(database, {
+  let storedChunks = [];
+  let ragChunks = [];
+  let search = { sources: [], error: null };
+  let llm;
+  let assistantContent;
+
+  if (useRag) {
+    try {
+      const ragAnswer = await answerWithAgnoRag(database, {
+        userId,
+        threadId: chatId,
+        message,
+        query: ragQuery,
+        model,
+        limit: summaryMode ? 30 : 8,
+        summaryMode,
+        attachments: normalizedAttachments,
+        createdAt: now,
+      });
+      ragChunks = ragAnswer.sources;
+      storedChunks = Array.from({ length: ragAnswer.storedChunks }, (_, index) => ({ fileName: `chunk-${index}` }));
+      llm = {
+        reply: ragAnswer.reply,
+        model: ragAnswer.model,
+        usage: ragAnswer.usage,
+        fallbackFrom: undefined,
+        fallbackError: undefined,
+        error: ragAnswer.error,
+      };
+      assistantContent = ragAnswer.reply;
+    } catch (error) {
+      storedChunks = await storeRagChunks(database, {
+        userId,
+        threadId: chatId,
+        messageId: userMessageResult.insertedId?.toString(),
+        attachments: normalizedAttachments,
+        createdAt: now,
+      });
+      ragChunks = await retrieveRagChunks(database, {
         userId,
         threadId: chatId,
         query: ragQuery,
         limit: summaryMode ? 30 : 8,
         summaryMode,
         attachments: normalizedAttachments,
-      })
-    : [];
-  const webSearchQuery = buildWebSearchQuery(message, ragChunks, normalizedAttachments);
-  const search = useWebSearch ? await searchWeb(webSearchQuery) : { sources: [], error: null };
-  const searchContext = formatSearchContext(search);
-  const ragContext = formatRagContext(ragChunks, { summaryMode });
-  const attachmentStatus = formatAttachmentStatus(normalizedAttachments, storedChunks);
-  const contextBlocks = [searchContext, ragContext, attachmentStatus].filter(Boolean).join("\n\n");
-  const taskInstruction = summaryMode
-    ? "Task: Summarize the attached/retrieved document clearly. Include the main topic, core sections or ideas, and important details found in the chunks. Do not ask the user for a more specific question."
-    : "";
-  const llmMessage = contextBlocks
-    ? `${contextBlocks}\n\n${taskInstruction ? `${taskInstruction}\n\n` : ""}User question:\n${message}`
-    : message;
-  const llm = await generateReply(llmMessage, model, imagePartsForLlm(normalizedAttachments));
-  const reply = appendSources(llm.reply, search.sources);
-  const searchErrorNote =
-    useWebSearch && search.error
-      ? `Note: Web search was unavailable (${search.error.message}).\n\n`
-      : "";
-  const assistantContent = `${searchErrorNote}${reply}`;
+      });
+      const ragContext = formatRagContext(ragChunks, { summaryMode });
+      const attachmentStatus = formatAttachmentStatus(normalizedAttachments, storedChunks);
+      const contextBlocks = [ragContext, attachmentStatus].filter(Boolean).join("\n\n");
+      const taskInstruction = summaryMode
+        ? "Task: Summarize the attached/retrieved document clearly. Include the main topic, core sections or ideas, and important details found in the chunks. Do not ask the user for a more specific question."
+        : "";
+      const llmMessage = contextBlocks
+        ? `${contextBlocks}\n\n${taskInstruction ? `${taskInstruction}\n\n` : ""}User question:\n${message}`
+        : message;
+      llm = await generateReply(llmMessage, model, imagePartsForLlm(normalizedAttachments));
+      assistantContent = `Note: Agno RAG answer failed, so the legacy RAG fallback was used.\n\n${llm.reply}`;
+    }
+  } else {
+    const webSearchQuery = buildWebSearchQuery(message, ragChunks, normalizedAttachments);
+    search = useWebSearch ? await searchWeb(webSearchQuery) : { sources: [], error: null };
+    const searchContext = formatSearchContext(search);
+    const contextBlocks = [searchContext].filter(Boolean).join("\n\n");
+    const llmMessage = contextBlocks ? `${contextBlocks}\n\nUser question:\n${message}` : message;
+    llm = await generateReply(llmMessage, model, imagePartsForLlm(normalizedAttachments));
+    const reply = appendSources(llm.reply, search.sources);
+    const searchErrorNote =
+      useWebSearch && search.error
+        ? `Note: Web search was unavailable (${search.error.message}).\n\n`
+        : "";
+    assistantContent = `${searchErrorNote}${reply}`;
+  }
 
   await messages.insertOne({
     threadId: chatId,

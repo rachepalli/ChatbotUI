@@ -36,6 +36,8 @@ EMBEDDING_TIMEOUT_MS = int(os.getenv("RAG_EMBEDDING_TIMEOUT_MS", "15000"))
 CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "1200"))
 CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "180"))
 MAX_CHUNKS_PER_ATTACHMENT = int(os.getenv("RAG_MAX_CHUNKS_PER_ATTACHMENT", "80"))
+DEFAULT_CHAT_MODEL = os.getenv("RAG_CHAT_MODEL", "gemini-2.5-flash")
+AGNO_RUN_TIMEOUT = int(os.getenv("RAG_RUN_TIMEOUT_SECONDS", "45"))
 
 
 mongo_client: Optional[MongoClient] = None
@@ -248,6 +250,66 @@ def public_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def normalize_chat_model(model: str) -> str:
+    value = str(model or "").strip()
+    aliases = {
+        "gemini-2.5": "gemini-2.5-flash",
+        "gemini-2.0": "gemini-2.5-flash-lite",
+        "gemini-2.0-flash": "gemini-2.5-flash-lite",
+        "gemini-lite": "gemini-2.5-flash-lite",
+        "llama70b": "llama-70b",
+        "llama-70b-ollama": "ollama:llama3.3:70b",
+        "ollama:llama70b": "ollama:llama3.3:70b",
+    }
+    return aliases.get(value, value or DEFAULT_CHAT_MODEL)
+
+
+def agno_model(model: str):
+    normalized = normalize_chat_model(model)
+    if normalized.startswith("ollama:"):
+        try:
+            from agno.models.ollama import Ollama
+        except ImportError as error:
+            raise RuntimeError("Missing Python dependency 'ollama'. Install rag-service requirements.") from error
+        host = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+        return Ollama(id=normalized.replace("ollama:", "") or os.getenv("OLLAMA_MODEL", "llama3.2"), host=host)
+
+    if "gemini" in normalized:
+        try:
+            from agno.models.google import Gemini
+        except ImportError as error:
+            raise RuntimeError("Missing Python dependency 'google-genai'. Install rag-service requirements.") from error
+        api_key = os.getenv("GOOGLE_GENERATIVE_AI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        return Gemini(id=normalized, api_key=api_key, timeout=AGNO_RUN_TIMEOUT)
+
+    try:
+        from agno.models.groq import Groq
+    except ImportError as error:
+        raise RuntimeError("Missing Python dependency 'groq'. Install rag-service requirements.") from error
+    mapped = "llama-3.1-8b-instant" if normalized == "llama-8b" else "llama-3.3-70b-versatile"
+    return Groq(id=mapped, api_key=os.getenv("GROQ_API_KEY"), timeout=AGNO_RUN_TIMEOUT)
+
+
+def run_content(output: Any) -> str:
+    if hasattr(output, "get_content_as_string"):
+        return str(output.get_content_as_string() or "").strip()
+    if hasattr(output, "content"):
+        return str(output.content or "").strip()
+    return str(output or "").strip()
+
+
+def run_usage(output: Any) -> dict[str, Any]:
+    metrics = getattr(output, "metrics", None)
+    if not metrics:
+        return {}
+    if hasattr(metrics, "to_dict"):
+        try:
+            return metrics.to_dict()
+        except Exception:
+            return {}
+    return {}
+
+
 class AgnoRagEngine:
     def __init__(self) -> None:
         self.agent = Agent(
@@ -256,6 +318,48 @@ class AgnoRagEngine:
             knowledge_retriever=self.retrieve_for_agno,
             search_knowledge=True,
             markdown=True,
+        )
+
+    def build_answer_agent(
+        self,
+        model: str,
+        user_id: str,
+        thread_id: str,
+        summary_mode: bool,
+        attachment_ids: list[str],
+    ) -> Agent:
+        def scoped_retriever(query: str, agent: Optional[Agent] = None, num_documents: int = 8, **kwargs: Any):
+            kwargs.pop("user_id", None)
+            kwargs.pop("thread_id", None)
+            kwargs.pop("summary_mode", None)
+            kwargs.pop("attachment_ids", None)
+            return self.retrieve_for_agno(
+                query,
+                agent=agent,
+                num_documents=30 if summary_mode else num_documents,
+                user_id=user_id,
+                thread_id=thread_id,
+                summary_mode=summary_mode,
+                attachment_ids=attachment_ids,
+                **kwargs,
+            )
+
+        return Agent(
+            name="Metawurks RAG",
+            model=agno_model(model),
+            description="Answers questions using user-scoped uploaded document chunks.",
+            instructions=[
+                "Use retrieved document chunks when they are relevant.",
+                "Ground the answer in the retrieved content and do not invent document details.",
+                "If the retrieved chunks do not contain the answer, say what is missing.",
+                "When chunks are available, do not say you cannot access the uploaded document.",
+                "For summary requests, produce a clear summary from the available chunks.",
+            ],
+            knowledge_retriever=scoped_retriever,
+            search_knowledge=True,
+            add_search_knowledge_instructions=True,
+            markdown=True,
+            retries=1,
         )
 
     def ingest(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -393,6 +497,59 @@ class AgnoRagEngine:
         ranked.sort(key=lambda item: item.get("relevance") or 0, reverse=True)
         return [public_chunk(chunk) for chunk in ranked[:safe_limit]]
 
+    def answer(self, payload: dict[str, Any]) -> dict[str, Any]:
+        user_id = str(payload.get("userId") or "").strip()
+        thread_id = str(payload.get("threadId") or "").strip()
+        message = str(payload.get("message") or "").strip()
+        if not user_id or not thread_id:
+            raise ValueError("Missing userId or threadId")
+        if not message:
+            raise ValueError("Missing message")
+
+        stored_chunks = self.ingest(payload) if payload.get("attachments") else []
+        attachment_ids = [
+            str(attachment.get("attachmentId") or attachment_id(attachment))
+            for attachment in payload.get("attachments") or []
+            if str(attachment.get("text") or "").strip()
+        ]
+        summary_mode = bool(payload.get("summaryMode"))
+        limit = 30 if summary_mode else int(payload.get("limit") or 8)
+        query = str(payload.get("query") or message).strip()
+        sources = self.search(
+            user_id=user_id,
+            thread_id=thread_id,
+            query=query,
+            limit=limit,
+            summary_mode=summary_mode,
+            attachment_ids=attachment_ids,
+        )
+
+        agent = self.build_answer_agent(
+            model=str(payload.get("model") or DEFAULT_CHAT_MODEL),
+            user_id=user_id,
+            thread_id=thread_id,
+            summary_mode=summary_mode,
+            attachment_ids=attachment_ids,
+        )
+        output = agent.run(
+            message,
+            user_id=user_id,
+            session_id=thread_id,
+            metadata={"framework": "agno", "threadId": thread_id},
+        )
+        reply = run_content(output)
+        if not reply:
+            raise RuntimeError("Agno did not return a response")
+
+        return {
+            "reply": reply,
+            "model": getattr(output, "model", None) or normalize_chat_model(str(payload.get("model") or DEFAULT_CHAT_MODEL)),
+            "usage": run_usage(output),
+            "sources": sources,
+            "storedChunks": len(stored_chunks),
+            "framework": "agno",
+        }
+
 
 engine = AgnoRagEngine()
 
@@ -434,6 +591,10 @@ class Handler(BaseHTTPRequestHandler):
                     attachment_ids=payload.get("attachmentIds") or [],
                 )
                 send_json(self, 200, {"results": results, "framework": "agno"})
+                return
+            if self.path == "/answer":
+                result = engine.answer(payload)
+                send_json(self, 200, result)
                 return
             send_json(self, 404, {"error": "Not Found", "service": SERVICE_NAME})
         except json.JSONDecodeError:
