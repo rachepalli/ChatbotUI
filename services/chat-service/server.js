@@ -64,6 +64,54 @@ function buildAutoTitle(message) {
   return message.replace(/\s+/g, " ").trim().slice(0, 50) || "New Chat";
 }
 
+function compactConversationText(value, maxLength = 900) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
+}
+
+function roleLabel(role) {
+  return role === "assistant" ? "Assistant" : "User";
+}
+
+function formatConversationHistory(history) {
+  const lines = history
+    .filter((item) => item?.content)
+    .map((item) => `${roleLabel(item.role)}: ${compactConversationText(item.content)}`);
+
+  if (!lines.length) return "";
+
+  return [
+    "Previous conversation in this chat, oldest to newest:",
+    lines.join("\n"),
+    "",
+    "Use this context to understand follow-up questions. If the user says things like it, that, this topic, same, explain more, or asks a short related question, infer the subject from the previous conversation and answer directly. Ask for clarification only when the previous conversation truly does not identify the subject.",
+  ].join("\n");
+}
+
+function buildContextualPrompt(message, conversationContext) {
+  if (!conversationContext) return message;
+
+  return [
+    conversationContext,
+    "",
+    "Current user question:",
+    message,
+  ].join("\n");
+}
+
+function buildContextualQuery(message, history) {
+  const recentUserContext = history
+    .filter((item) => item?.role === "user" && item?.content)
+    .slice(-4)
+    .map((item) => compactConversationText(item.content, 300))
+    .join("\n");
+
+  return [recentUserContext ? `Recent related user questions:\n${recentUserContext}` : "", `Current question:\n${message}`]
+    .filter(Boolean)
+    .join("\n\n")
+    .slice(0, 2400);
+}
+
 function withTimeout(promise, timeoutMs) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
@@ -806,6 +854,15 @@ async function sendMessage(req, res) {
   const threads = database.collection("threads");
   const messages = database.collection("messages");
   const now = new Date();
+  const previousMessages = await messages
+    .find({ threadId: chatId, userId })
+    .sort({ createdAt: -1 })
+    .limit(12)
+    .toArray();
+  const conversationHistory = previousMessages.reverse();
+  const conversationContext = formatConversationHistory(conversationHistory);
+  const contextualPrompt = buildContextualPrompt(message, conversationContext);
+  const contextualQuery = buildContextualQuery(message, conversationHistory);
 
   await threads.updateOne(
     { chatId, userId },
@@ -851,7 +908,7 @@ async function sendMessage(req, res) {
     );
   }
 
-  const ragQuery = buildRagRetrievalQuery(message, normalizedAttachments);
+  const ragQuery = buildRagRetrievalQuery(contextualQuery, normalizedAttachments);
   const summaryMode = isSummaryRequest(message);
   const useWebSearch = typeof webSearch === "boolean" ? webSearch : shouldUseWebSearch(message);
   const useRag = shouldUseRag(message, normalizedAttachments);
@@ -866,7 +923,7 @@ async function sendMessage(req, res) {
       const ragAnswer = await answerWithAgnoRag(database, {
         userId,
         threadId: chatId,
-        message,
+        message: contextualPrompt,
         query: ragQuery,
         model,
         limit: summaryMode ? 30 : 8,
@@ -908,17 +965,17 @@ async function sendMessage(req, res) {
         ? "Task: Summarize the attached/retrieved document clearly. Include the main topic, core sections or ideas, and important details found in the chunks. Do not ask the user for a more specific question."
         : "";
       const llmMessage = contextBlocks
-        ? `${contextBlocks}\n\n${taskInstruction ? `${taskInstruction}\n\n` : ""}User question:\n${message}`
-        : message;
+        ? `${contextBlocks}\n\n${taskInstruction ? `${taskInstruction}\n\n` : ""}${contextualPrompt}`
+        : contextualPrompt;
       llm = await generateReply(llmMessage, model, imagePartsForLlm(normalizedAttachments));
       assistantContent = `Note: Agno RAG answer failed, so the legacy RAG fallback was used.\n\n${llm.reply}`;
     }
   } else {
-    const webSearchQuery = buildWebSearchQuery(message, ragChunks, normalizedAttachments);
+    const webSearchQuery = buildWebSearchQuery(contextualQuery, ragChunks, normalizedAttachments);
     search = useWebSearch ? await searchWeb(webSearchQuery) : { sources: [], error: null };
     const searchContext = formatSearchContext(search);
     const contextBlocks = [searchContext].filter(Boolean).join("\n\n");
-    const llmMessage = contextBlocks ? `${contextBlocks}\n\nUser question:\n${message}` : message;
+    const llmMessage = contextBlocks ? `${contextBlocks}\n\n${contextualPrompt}` : contextualPrompt;
     llm = await generateReply(llmMessage, model, imagePartsForLlm(normalizedAttachments));
     const reply = appendSources(llm.reply, search.sources);
     const searchErrorNote =
