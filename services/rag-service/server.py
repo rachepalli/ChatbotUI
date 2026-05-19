@@ -29,7 +29,7 @@ SERVICE_NAME = os.getenv("SERVICE_NAME", "rag-service")
 MONGO_URI = os.getenv("MONGODB_URI")
 DB_NAME = os.getenv("MONGODB_DB")
 EMBEDDING_DIMENSIONS = int(os.getenv("RAG_EMBEDDING_DIMENSIONS", "768"))
-EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001"))
+EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))
 LOCAL_EMBEDDING_MODEL = "local-hash-embedding"
 LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL", "http://localhost:4004").rstrip("/")
 EMBEDDING_TIMEOUT_MS = int(os.getenv("RAG_EMBEDDING_TIMEOUT_MS", "15000"))
@@ -358,6 +358,7 @@ class AgnoRagEngine:
             knowledge_retriever=scoped_retriever,
             search_knowledge=True,
             add_search_knowledge_instructions=True,
+            add_knowledge_to_context=True,
             markdown=True,
             retries=1,
         )

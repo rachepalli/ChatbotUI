@@ -8,6 +8,14 @@ import ThemeToggle from "@/components/ui/ThemeToggle";
 import LanguageSwitcher from "@/components/ui/LanguageSwitcher";
 import { useAppTranslation } from "@/components/ui/Language";
 
+async function readResponseJson(res: Response) {
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 export default function SignupPage() {
   const router = useRouter();
   const [name, setName] = useState("");
@@ -45,11 +53,11 @@ export default function SignupPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: trimmedName, email: normalizedEmail, password }),
     });
-    const data = await res.json();
+    const data = await readResponseJson(res);
 
     if (!res.ok) {
       setLoading(false);
-      setError(data.error || t("signupFailed"));
+      setError(data?.error || t("signupFailed"));
       return;
     }
 

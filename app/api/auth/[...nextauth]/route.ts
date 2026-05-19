@@ -104,8 +104,6 @@ export const authOptions: AuthOptions = {
     },
 
     async session({ session, token }) {
-      await connectToDatabase();
-
       if (session.user) {
         if (typeof token.name === "string") session.user.name = token.name;
         if (typeof token.email === "string") session.user.email = token.email;
@@ -113,12 +111,18 @@ export const authOptions: AuthOptions = {
 
       if (!session.user?.email) return session;
 
-      const dbUser = await User.findOne({
-        email: session.user.email,
-      });
+      try {
+        await connectToDatabase();
 
-      if (dbUser) {
-        (session.user as SessionUserWithId).id = dbUser._id.toString();
+        const dbUser = await User.findOne({
+          email: session.user.email,
+        });
+
+        if (dbUser) {
+          (session.user as SessionUserWithId).id = dbUser._id.toString();
+        }
+      } catch (error) {
+        console.error("NextAuth session database lookup failed", error);
       }
 
       return session;

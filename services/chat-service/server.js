@@ -351,7 +351,7 @@ async function extractImageTextWithVision(attachment, payload) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "gemini-2.5-flash",
+          model: process.env.VISION_MODEL || "gpt-4.1-mini",
           timeoutMs: 20000,
           message: [
             "Analyze this image for RAG ingestion.",
@@ -372,7 +372,7 @@ async function extractImageTextWithVision(attachment, payload) {
     );
 
     const data = await response.json().catch(() => null);
-    if (!response.ok || data?.error || !String(data?.model || "").includes("gemini")) return "";
+    if (!response.ok || data?.error) return "";
 
     return normalizeExtractedText(
       [`Image analysis for ${attachment.name}:`, data?.message || ""].filter(Boolean).join("\n")
@@ -722,42 +722,53 @@ function buildWebSearchQuery(message, ragChunks, attachments) {
 }
 
 async function runTavilySearch(query, options) {
-  const response = await withTimeout(
-    fetch(tavilySearchUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.TAVILY_API_KEY}`,
-      },
-      body: JSON.stringify({
-        query,
-        search_depth: options.searchDepth,
-        max_results: 5,
-        include_answer: false,
-        include_raw_content: options.includeRawContent,
-        include_images: false,
+  try {
+    const response = await withTimeout(
+      fetch(tavilySearchUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.TAVILY_API_KEY}`,
+        },
+        body: JSON.stringify({
+          query,
+          search_depth: options.searchDepth,
+          max_results: 5,
+          include_answer: false,
+          include_raw_content: options.includeRawContent,
+          include_images: false,
+        }),
       }),
-    }),
-    8000
-  );
+      options.timeoutMs || 12000
+    );
 
-  const data = await response.json().catch(() => null);
-  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      return {
+        sources: [],
+        error: {
+          code: "SEARCH_BAD_RESPONSE",
+          message: data?.error || data?.message || `Tavily search failed with ${response.status}`,
+        },
+      };
+    }
+
+    return {
+      sources: Array.isArray(data?.results)
+        ? data.results.map(normalizeSearchResult).filter((source) => source.url)
+        : [],
+      error: null,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Tavily search request failed";
     return {
       sources: [],
       error: {
-        code: "SEARCH_BAD_RESPONSE",
-        message: data?.error || data?.message || `Tavily search failed with ${response.status}`,
+        code: error instanceof Error && error.message === "timeout" ? "SEARCH_TIMEOUT" : "SEARCH_UNAVAILABLE",
+        message,
       },
     };
   }
-
-  return {
-    sources: Array.isArray(data?.results)
-      ? data.results.map(normalizeSearchResult).filter((source) => source.url)
-      : [],
-    error: null,
-  };
 }
 
 async function searchWeb(query) {
@@ -772,6 +783,7 @@ async function searchWeb(query) {
     const advancedSearch = await runTavilySearch(query, {
       searchDepth: "advanced",
       includeRawContent: true,
+      timeoutMs: 12000,
     });
 
     if (!advancedSearch.error || advancedSearch.sources.length) return advancedSearch;
@@ -779,6 +791,7 @@ async function searchWeb(query) {
     const basicSearch = await runTavilySearch(query, {
       searchDepth: "basic",
       includeRawContent: false,
+      timeoutMs: 12000,
     });
 
     if (!basicSearch.error || basicSearch.sources.length) return basicSearch;
@@ -942,7 +955,7 @@ async function sendMessage(req, res) {
         error: ragAnswer.error,
       };
       assistantContent = ragAnswer.reply;
-    } catch (error) {
+    } catch {
       storedChunks = await storeRagChunks(database, {
         userId,
         threadId: chatId,

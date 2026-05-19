@@ -28,6 +28,7 @@ if (withNext) {
     command: [npmCommand, ...npmRunDevArgs],
     env: {},
     port: 3000,
+    healthPath: "/",
   });
 }
 
@@ -86,11 +87,17 @@ function isPortAvailable(port) {
 function commandWorks(command) {
   return new Promise((resolve) => {
     const [cmd, ...args] = command;
-    const child = spawn(cmd, [...args, "--version"], {
-      stdio: "ignore",
-      shell: false,
-      env: buildEnv({}),
-    });
+    let child;
+    try {
+      child = spawn(cmd, [...args, "--version"], {
+        stdio: "ignore",
+        shell: false,
+        env: buildEnv({}),
+      });
+    } catch {
+      resolve(false);
+      return;
+    }
     child.on("error", () => resolve(false));
     child.on("exit", (code) => resolve(code === 0));
   });
@@ -127,7 +134,7 @@ async function resolveRagPythonCommand() {
     isWindows ? "Scripts/python.exe" : "bin/python"
   );
 
-  if (fs.existsSync(venvPython) && (await commandWorks([venvPython]))) return [venvPython];
+  if (fs.existsSync(venvPython)) return [venvPython];
   return resolvePythonCommand();
 }
 
@@ -157,7 +164,7 @@ function spawnProcess(proc) {
 async function waitForHealth(proc) {
   if (!proc.port) return;
 
-  const url = `http://localhost:${proc.port}/health`;
+  const url = `http://localhost:${proc.port}${proc.healthPath || "/health"}`;
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
       const response = await fetch(url);

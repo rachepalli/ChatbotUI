@@ -90,6 +90,8 @@ function isOllamaModel(model) {
 function normalizeModel(model) {
   const value = String(model || "").trim();
   const aliases = {
+    openai: "gpt-4.1-mini",
+    "openai-mini": "gpt-4.1-mini",
     "gemini-2.5": "gemini-2.5-flash",
     "gemini-2.0": "gemini-2.5-flash-lite",
     "gemini-2.0-flash": "gemini-2.5-flash-lite",
@@ -99,6 +101,10 @@ function normalizeModel(model) {
     "ollama:llama70b": "ollama:llama3.3:70b",
   };
   return aliases[value] || value || "gemini-2.5-flash";
+}
+
+function isOpenAIModel(model) {
+  return /^(gpt-|o[0-9])/.test(model);
 }
 
 function ollamaModelName(model) {
@@ -177,6 +183,74 @@ async function callGemini(message, model, timeoutMs, attachments) {
   };
 }
 
+function openAIResponseText(data) {
+  if (typeof data?.output_text === "string") return data.output_text;
+  const parts = [];
+  for (const output of data?.output || []) {
+    for (const content of output?.content || []) {
+      if (typeof content?.text === "string") parts.push(content.text);
+    }
+  }
+  return parts.join("\n").trim();
+}
+
+async function callOpenAI(message, model, timeoutMs, attachments) {
+  if (!process.env.OPENAI_API_KEY) {
+    return {
+      message: "",
+      model,
+      usage: {},
+      error: mapError("PROVIDER_UNAVAILABLE", "Missing OPENAI_API_KEY", "openai"),
+    };
+  }
+
+  const content = [{ type: "input_text", text: message }];
+  for (const attachment of normalizeAttachments(attachments)) {
+    content.push({
+      type: "input_image",
+      image_url: `data:${attachment.mimeType};base64,${attachment.data}`,
+      detail: "high",
+    });
+  }
+
+  const response = await withTimeout(
+    fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model,
+        input: [{ role: "user", content }],
+      }),
+    }),
+    timeoutMs
+  );
+
+  const data = await response.json().catch(() => null);
+  const text = openAIResponseText(data);
+  if (!response.ok || !text) {
+    return {
+      message: "",
+      model,
+      usage: {},
+      error: mapError(providerCode(response), providerMessage(data, `OpenAI bad response ${response.status}: ${safeJson(data)}`), "openai"),
+    };
+  }
+
+  return {
+    message: text,
+    model,
+    usage: {
+      promptTokens: data?.usage?.input_tokens,
+      completionTokens: data?.usage?.output_tokens,
+      totalTokens: data?.usage?.total_tokens,
+    },
+    error: null,
+  };
+}
+
 async function callGeminiEmbeddings(texts, model, timeoutMs, dimensions) {
   if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
     return {
@@ -224,6 +298,60 @@ async function callGeminiEmbeddings(texts, model, timeoutMs, dimensions) {
     embeddings,
     model,
     dimensions,
+    error: null,
+  };
+}
+
+async function callOpenAIEmbeddings(texts, model, timeoutMs, dimensions) {
+  if (!process.env.OPENAI_API_KEY) {
+    return {
+      embeddings: [],
+      model,
+      dimensions,
+      error: mapError("PROVIDER_UNAVAILABLE", "Missing OPENAI_API_KEY", "openai"),
+    };
+  }
+
+  const response = await withTimeout(
+    fetch("https://api.openai.com/v1/embeddings", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model,
+        input: texts,
+        dimensions,
+      }),
+    }),
+    timeoutMs
+  );
+
+  const data = await response.json().catch(() => null);
+  const embeddings = Array.isArray(data?.data)
+    ? data.data
+        .sort((left, right) => Number(left?.index || 0) - Number(right?.index || 0))
+        .map((embedding) => normalizeVector(embedding?.embedding, dimensions))
+    : [];
+
+  if (!response.ok || embeddings.length !== texts.length) {
+    return {
+      embeddings: [],
+      model,
+      dimensions,
+      error: mapError(providerCode(response), providerMessage(data, `OpenAI embeddings bad response ${response.status}: ${safeJson(data)}`), "openai"),
+    };
+  }
+
+  return {
+    embeddings,
+    model,
+    dimensions,
+    usage: {
+      promptTokens: data?.usage?.prompt_tokens,
+      totalTokens: data?.usage?.total_tokens,
+    },
     error: null,
   };
 }
@@ -324,6 +452,7 @@ async function generateWithRetry(message, model, timeoutMs, attachments) {
     try {
       let result;
       if (isOllamaModel(model)) result = await callOllama(message, model, timeoutMs);
+      else if (isOpenAIModel(model)) result = await callOpenAI(message, model, timeoutMs, attachments);
       else if (model.includes("gemini")) result = await callGemini(message, model, timeoutMs, attachments);
       else result = await callGroq(message, model, timeoutMs);
 
@@ -332,7 +461,7 @@ async function generateWithRetry(message, model, timeoutMs, attachments) {
     } catch (error) {
       if (i === attempts - 1) {
         const code = error instanceof Error && error.message === "timeout" ? "PROVIDER_TIMEOUT" : "PROVIDER_UNAVAILABLE";
-        const provider = isOllamaModel(model) ? "ollama" : model.includes("gemini") ? "gemini" : "groq";
+        const provider = isOllamaModel(model) ? "ollama" : isOpenAIModel(model) ? "openai" : model.includes("gemini") ? "gemini" : "groq";
         lastResult = {
           message: "",
           model,
@@ -413,7 +542,7 @@ const server = http.createServer(async (req, res) => {
       const texts = Array.isArray(body?.texts)
         ? body.texts.map((text) => String(text || "").slice(0, 8000))
         : [];
-      const model = String(body?.model || process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001");
+      const model = String(body?.model || process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small");
       const timeoutMs = Number(body?.timeoutMs || 15000);
       const dimensions = Math.min(Math.max(Number(body?.dimensions || defaultEmbeddingDimensions), 128), 3072);
 
@@ -426,7 +555,9 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      const result = await callGeminiEmbeddings(texts, model, timeoutMs, dimensions);
+      const result = model.startsWith("text-embedding-")
+        ? await callOpenAIEmbeddings(texts, model, timeoutMs, dimensions)
+        : await callGeminiEmbeddings(texts, model, timeoutMs, dimensions);
       if (!result.error) return json(res, 200, result);
 
       return json(res, 200, {

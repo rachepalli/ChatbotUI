@@ -393,16 +393,6 @@ export default function ChatWindow({
     }
   };
 
-  const modelLabel = (value: string) => {
-    if (value === "gemini-2.5-flash") return "Gemini 2.5 Flash";
-    if (value === "gemini-2.5-flash-lite") return "Gemini 2.5 Flash Lite";
-    if (value === "llama-8b") return "LLaMA 8B";
-    if (value === "llama-70b") return "LLaMA 70B";
-    if (value === "ollama:llama3.2") return "Ollama Llama 3.2";
-    if (value === "ollama:llama3.3:70b") return "Ollama LLaMA 70B";
-    return value;
-  };
-
   const publicAttachment = (attachment: Attachment) => {
     const copy = { ...attachment };
     delete copy.dataUrl;
@@ -417,14 +407,7 @@ export default function ChatWindow({
   };
 
   const formatReply = (data: ChatResponse) => {
-    const reply = data.reply || data.error || t("noResponseFromAi");
-    if (!data.fallbackFrom) return reply;
-
-    const reason = data.fallbackError?.message
-      ? ` ${data.fallbackError.message}`
-      : "";
-
-    return `${t("fallbackNotice")} ${modelLabel(data.fallbackFrom)} ${t("fallbackUnavailable")}.${reason} ${t("answeredWith")} ${modelLabel(data.model || model)} ${t("instead")}.\n\n${reply}`;
+    return data.reply || data.error || t("noResponseFromAi");
   };
 
   const hasConversation = messages.length > 0;
@@ -553,39 +536,6 @@ export default function ChatWindow({
             </div>
           )}
         </div>
-        <input
-          ref={photosInputRef}
-          type="file"
-          accept="image/*"
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            addFiles(e.target.files);
-            e.target.value = "";
-          }}
-        />
-        <input
-          ref={documentsInputRef}
-          type="file"
-          accept=".txt,.md,.csv,.json,.tsv,.log,.xml,.html,.css,.js,.jsx,.ts,.tsx,.pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/*"
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            addFiles(e.target.files);
-            e.target.value = "";
-          }}
-        />
-        <input
-          ref={cameraInputRef}
-          type="file"
-          accept="image/*"
-          capture="environment"
-          className="hidden"
-          onChange={(e) => {
-            addFiles(e.target.files);
-            e.target.value = "";
-          }}
-        />
         <textarea
           ref={textareaRef}
           value={input}
@@ -701,7 +651,7 @@ export default function ChatWindow({
       });
 
       const data = await res.json();
-      if (data.model && data.model !== model && !data.fallbackFrom) setModel(data.model);
+      if (data.model && data.model !== model) setModel(data.model);
       if (!res.ok) throw new Error(data.error || `Chat request failed with ${res.status}`);
 
       setMessages((prev) => {
@@ -733,6 +683,39 @@ export default function ChatWindow({
 
   return (
     <section className="relative flex h-screen min-w-0 flex-1 flex-col overflow-hidden bg-[color:var(--background)]">
+      <input
+        ref={photosInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          addFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
+      <input
+        ref={documentsInputRef}
+        type="file"
+        accept=".txt,.md,.csv,.json,.tsv,.log,.xml,.html,.css,.js,.jsx,.ts,.tsx,.pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/*"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          addFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
+      <input
+        ref={cameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(e) => {
+          addFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
       <header
         className={`z-20 flex h-16 shrink-0 items-center justify-between bg-[color:var(--background)] px-4 transition-[border-color,box-shadow] duration-200 ${
           chatScrolled ? "border-b border-[color:var(--border)] shadow-sm" : "border-b border-transparent"
