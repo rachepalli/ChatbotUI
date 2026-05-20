@@ -64,8 +64,13 @@ API_GATEWAY_URL=http://localhost:8080
 AUTH_SERVICE_URL=http://localhost:4001
 LLM_SERVICE_URL=http://localhost:4004
 RAG_SERVICE_URL=http://localhost:4005
+RAG_VECTOR_DB=mongodb
+RAG_TABLE_NAME=agno_rag_documents
+RAG_DB_URL=postgresql+psycopg://rag:rag@localhost:5433/rag
 OLLAMA_BASE_URL=http://localhost:11434
 ```
+
+RAG uses the Agno Knowledge framework. Local microservice runs use the Agno MongoDB vector DB by default through `MONGODB_URI`. Docker Compose sets `RAG_VECTOR_DB=pgvector` and starts a PgVector database for the RAG service.
 
 For normal Vercel deployment, do not set `API_GATEWAY_URL` or `AUTH_SERVICE_URL` unless those services are deployed somewhere public. The app can use the built-in Next.js API route fallback for signup.
 

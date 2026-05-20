@@ -10,14 +10,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
 
 try:
-    from pymongo import MongoClient
-except ImportError as error:
-    raise SystemExit(
-        "Missing Python dependency 'pymongo'. Run `python -m pip install -r services/rag-service/requirements.txt`."
-    ) from error
-
-try:
     from agno.agent import Agent
+    from agno.knowledge.embedder import Embedder
+    from agno.knowledge.knowledge import Knowledge
+    from agno.vectordb.search import SearchType
 except ImportError as error:
     raise SystemExit(
         "Missing Python dependency 'agno'. Run `python -m pip install -r services/rag-service/requirements.txt`."
@@ -27,21 +23,20 @@ except ImportError as error:
 PORT = int(os.getenv("PORT", "4005"))
 SERVICE_NAME = os.getenv("SERVICE_NAME", "rag-service")
 MONGO_URI = os.getenv("MONGODB_URI")
-DB_NAME = os.getenv("MONGODB_DB")
+DB_NAME = os.getenv("MONGODB_DB") or "myapp"
+RAG_VECTOR_DB = os.getenv("RAG_VECTOR_DB", "auto").strip().lower()
+RAG_TABLE_NAME = os.getenv("RAG_TABLE_NAME", "agno_rag_documents")
+RAG_SCHEMA = os.getenv("RAG_SCHEMA", "ai")
+RAG_DB_URL = os.getenv("RAG_DB_URL") or os.getenv("PGVECTOR_URL") or os.getenv("POSTGRES_URL")
 EMBEDDING_DIMENSIONS = int(os.getenv("RAG_EMBEDDING_DIMENSIONS", "768"))
 EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))
 LOCAL_EMBEDDING_MODEL = "local-hash-embedding"
 LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL", "http://localhost:4004").rstrip("/")
 EMBEDDING_TIMEOUT_MS = int(os.getenv("RAG_EMBEDDING_TIMEOUT_MS", "15000"))
 CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "1200"))
-CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "180"))
-MAX_CHUNKS_PER_ATTACHMENT = int(os.getenv("RAG_MAX_CHUNKS_PER_ATTACHMENT", "80"))
 DEFAULT_CHAT_MODEL = os.getenv("RAG_CHAT_MODEL", "gemini-2.5-flash")
 AGNO_RUN_TIMEOUT = int(os.getenv("RAG_RUN_TIMEOUT_SECONDS", "45"))
-
-
-mongo_client: Optional[MongoClient] = None
-database = None
+RAG_MAX_RESULTS = int(os.getenv("RAG_MAX_RESULTS", "10"))
 
 
 def json_default(value: Any) -> Any:
@@ -67,24 +62,6 @@ def read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         return {}
     raw = handler.rfile.read(length).decode("utf-8")
     return json.loads(raw) if raw else {}
-
-
-def get_db():
-    global mongo_client, database
-    if not MONGO_URI:
-        raise RuntimeError("MONGODB_URI is required")
-    if mongo_client is None:
-        mongo_client = MongoClient(MONGO_URI)
-        database = mongo_client[DB_NAME] if DB_NAME else mongo_client.get_default_database()
-        chunks = database["rag_chunks"]
-        chunks.create_index([("userId", 1), ("threadId", 1), ("createdAt", -1)])
-        chunks.create_index([("userId", 1), ("threadId", 1), ("attachmentId", 1)])
-        chunks.create_index([("userId", 1), ("threadId", 1), ("embeddingModel", 1)])
-        try:
-            chunks.create_index([("chunkText", "text"), ("fileName", "text")])
-        except Exception:
-            pass
-    return database
 
 
 def normalize_text(value: str) -> str:
@@ -157,41 +134,22 @@ def embed_texts(texts: list[str]) -> tuple[list[list[float]], str]:
     return local_embedding_batch(texts)
 
 
-def cosine_similarity(left: list[float], right: list[float]) -> float:
-    if not left or not right:
-        return 0.0
-    length = min(len(left), len(right))
-    dot = sum(float(left[index] or 0) * float(right[index] or 0) for index in range(length))
-    left_mag = math.sqrt(sum(float(left[index] or 0) ** 2 for index in range(length)))
-    right_mag = math.sqrt(sum(float(right[index] or 0) ** 2 for index in range(length)))
-    denominator = left_mag * right_mag
-    return dot / denominator if denominator else 0.0
+class LlmServiceEmbedder(Embedder):
+    def __init__(self) -> None:
+        super().__init__(dimensions=EMBEDDING_DIMENSIONS)
 
+    def get_embedding(self, text: str) -> list[float]:
+        embeddings, _model = embed_texts([text])
+        return embeddings[0] if embeddings else local_embedding(text)
 
-def chunk_text(text: str) -> list[str]:
-    normalized = normalize_text(text)
-    if not normalized:
-        return []
-    chunks: list[str] = []
-    start = 0
-    while start < len(normalized):
-        end = min(start + CHUNK_SIZE, len(normalized))
-        if end < len(normalized):
-            boundaries = [
-                normalized.rfind("\n", start, end),
-                normalized.rfind(". ", start, end),
-                normalized.rfind(" ", start, end),
-            ]
-            boundary = max(boundaries)
-            if boundary > start + int(CHUNK_SIZE * 0.6):
-                end = boundary + 1
-        chunk = normalized[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        if end >= len(normalized):
-            break
-        start = max(0, end - CHUNK_OVERLAP)
-    return chunks[:MAX_CHUNKS_PER_ATTACHMENT]
+    def get_embedding_and_usage(self, text: str) -> tuple[list[float], Optional[dict[str, Any]]]:
+        return self.get_embedding(text), {"model": EMBEDDING_MODEL, "dimensions": EMBEDDING_DIMENSIONS}
+
+    async def async_get_embedding(self, text: str) -> list[float]:
+        return self.get_embedding(text)
+
+    async def async_get_embedding_and_usage(self, text: str) -> tuple[list[float], Optional[dict[str, Any]]]:
+        return self.get_embedding_and_usage(text)
 
 
 def parse_datetime(value: Any) -> datetime:
@@ -211,43 +169,6 @@ def attachment_id(attachment: dict[str, Any]) -> str:
         return existing
     source = f"{attachment.get('name')}:{attachment.get('size')}:{attachment.get('type')}:{attachment.get('text')}"
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
-
-
-def score_chunk(chunk: dict[str, Any], query_tokens: list[str]) -> float:
-    if not query_tokens:
-        return 0.0
-    chunk_tokens = set(chunk.get("tokenPreview") or tokenize(chunk.get("chunkText") or ""))
-    score = 0.0
-    filename = str(chunk.get("fileName") or "").lower()
-    for token in query_tokens:
-        if token in chunk_tokens:
-            score += 3
-        if token in filename:
-            score += 2
-    phrase = " ".join(query_tokens[:6])
-    if phrase and phrase in str(chunk.get("chunkText") or "").lower():
-        score += 8
-    return score
-
-
-def public_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": str(chunk.get("_id") or chunk.get("id") or ""),
-        "userId": chunk.get("userId"),
-        "threadId": chunk.get("threadId"),
-        "attachmentId": chunk.get("attachmentId"),
-        "fileName": chunk.get("fileName"),
-        "fileType": chunk.get("fileType"),
-        "fileSize": chunk.get("fileSize"),
-        "chunkIndex": chunk.get("chunkIndex"),
-        "chunkText": chunk.get("chunkText"),
-        "text": chunk.get("chunkText"),
-        "relevance": chunk.get("relevance"),
-        "vectorScore": chunk.get("vectorScore"),
-        "embeddingModel": chunk.get("embeddingModel"),
-        "createdAt": chunk.get("createdAt"),
-        "framework": "agno",
-    }
 
 
 def normalize_chat_model(model: str) -> str:
@@ -310,44 +231,97 @@ def run_usage(output: Any) -> dict[str, Any]:
     return {}
 
 
-class AgnoRagEngine:
-    def __init__(self) -> None:
-        self.agent = Agent(
-            name="Metawurks RAG",
-            description="Retrieves user-scoped document chunks for chat grounding.",
-            knowledge_retriever=self.retrieve_for_agno,
-            search_knowledge=True,
-            markdown=True,
+def vector_db_kind() -> str:
+    if RAG_VECTOR_DB in {"pgvector", "postgres", "postgresql"}:
+        return "pgvector"
+    if RAG_VECTOR_DB in {"mongodb", "mongo"}:
+        return "mongodb"
+    if RAG_DB_URL:
+        return "pgvector"
+    return "mongodb"
+
+
+def build_vector_db(embedder: Embedder):
+    kind = vector_db_kind()
+    if kind == "pgvector":
+        if not RAG_DB_URL:
+            raise RuntimeError("RAG_DB_URL is required when RAG_VECTOR_DB=pgvector")
+        try:
+            from agno.vectordb.pgvector import PgVector
+        except ImportError as error:
+            raise RuntimeError(
+                "Missing PgVector dependencies. Install sqlalchemy, psycopg, and pgvector."
+            ) from error
+        return PgVector(
+            table_name=RAG_TABLE_NAME,
+            schema=RAG_SCHEMA,
+            db_url=RAG_DB_URL,
+            embedder=embedder,
+            search_type=SearchType.hybrid,
+            vector_score_weight=0.75,
         )
 
-    def build_answer_agent(
-        self,
-        model: str,
-        user_id: str,
-        thread_id: str,
-        summary_mode: bool,
-        attachment_ids: list[str],
-    ) -> Agent:
-        def scoped_retriever(query: str, agent: Optional[Agent] = None, num_documents: int = 8, **kwargs: Any):
-            kwargs.pop("user_id", None)
-            kwargs.pop("thread_id", None)
-            kwargs.pop("summary_mode", None)
-            kwargs.pop("attachment_ids", None)
-            return self.retrieve_for_agno(
-                query,
-                agent=agent,
-                num_documents=30 if summary_mode else num_documents,
-                user_id=user_id,
-                thread_id=thread_id,
-                summary_mode=summary_mode,
-                attachment_ids=attachment_ids,
-                **kwargs,
-            )
+    if not MONGO_URI:
+        raise RuntimeError("MONGODB_URI is required when RAG_VECTOR_DB=mongodb")
+    try:
+        from agno.vectordb.mongodb import MongoDb
+    except ImportError as error:
+        raise RuntimeError("Missing MongoDB vector dependencies. Install pymongo.") from error
+    return MongoDb(
+        collection_name=RAG_TABLE_NAME,
+        db_url=MONGO_URI,
+        database=DB_NAME,
+        embedder=embedder,
+        search_type=SearchType.vector,
+        wait_until_index_ready_in_seconds=float(os.getenv("RAG_MONGO_INDEX_WAIT_SECONDS", "3")),
+        wait_after_insert_in_seconds=float(os.getenv("RAG_MONGO_INSERT_WAIT_SECONDS", "0")),
+    )
 
+
+def metadata_filter(user_id: str, thread_id: str, attachment_ids: Optional[list[str]] = None) -> dict[str, Any]:
+    filters: dict[str, Any] = {"userId": user_id, "threadId": thread_id}
+    ids = [str(value) for value in attachment_ids or [] if str(value)]
+    if len(ids) == 1:
+        filters["attachmentId"] = ids[0]
+    return filters
+
+
+def public_document(document: Any, index: int = 0) -> dict[str, Any]:
+    meta = dict(getattr(document, "meta_data", None) or {})
+    return {
+        "id": str(getattr(document, "id", None) or meta.get("id") or ""),
+        "userId": meta.get("userId"),
+        "threadId": meta.get("threadId"),
+        "attachmentId": meta.get("attachmentId"),
+        "fileName": meta.get("fileName") or getattr(document, "name", None),
+        "fileType": meta.get("fileType"),
+        "fileSize": meta.get("fileSize"),
+        "chunkIndex": int(meta.get("chunkIndex") or index),
+        "chunkText": getattr(document, "content", "") or "",
+        "text": getattr(document, "content", "") or "",
+        "relevance": meta.get("similarity_score") or meta.get("score"),
+        "vectorScore": meta.get("similarity_score") or meta.get("score"),
+        "embeddingModel": meta.get("embeddingModel") or EMBEDDING_MODEL,
+        "createdAt": meta.get("createdAt"),
+        "framework": "agno",
+    }
+
+
+class AgnoRagEngine:
+    def __init__(self) -> None:
+        self.embedder = LlmServiceEmbedder()
+        self.knowledge = Knowledge(
+            name="Metawurks RAG",
+            description="User-scoped document knowledge for Metawurks chat.",
+            vector_db=build_vector_db(self.embedder),
+            max_results=RAG_MAX_RESULTS,
+        )
+
+    def build_answer_agent(self, model: str) -> Agent:
         return Agent(
             name="Metawurks RAG",
             model=agno_model(model),
-            description="Answers questions using user-scoped uploaded document chunks.",
+            description="Answers questions using user-scoped uploaded document knowledge.",
             instructions=[
                 "Use retrieved document chunks when they are relevant.",
                 "Ground the answer in the retrieved content and do not invent document details.",
@@ -355,7 +329,7 @@ class AgnoRagEngine:
                 "When chunks are available, do not say you cannot access the uploaded document.",
                 "For summary requests, produce a clear summary from the available chunks.",
             ],
-            knowledge_retriever=scoped_retriever,
+            knowledge=self.knowledge,
             search_knowledge=True,
             add_search_knowledge_instructions=True,
             add_knowledge_to_context=True,
@@ -364,81 +338,65 @@ class AgnoRagEngine:
         )
 
     def ingest(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        db = get_db()
-        chunks = db["rag_chunks"]
         user_id = str(payload.get("userId") or "").strip()
         thread_id = str(payload.get("threadId") or "").strip()
         if not user_id or not thread_id:
             raise ValueError("Missing userId or threadId")
 
         message_id = str(payload.get("messageId") or "").strip()
-        created_at = parse_datetime(payload.get("createdAt"))
-        docs: list[dict[str, Any]] = []
+        created_at = parse_datetime(payload.get("createdAt")).isoformat()
+        stored: list[dict[str, Any]] = []
 
         for attachment in payload.get("attachments") or []:
-            text = str(attachment.get("text") or "")
+            text = normalize_text(str(attachment.get("text") or ""))
             if not text:
                 continue
+
             current_attachment_id = attachment_id(attachment)
-            attachment_chunks = chunk_text(text)
-            if not attachment_chunks:
-                continue
-            embeddings, embedding_model = embed_texts(attachment_chunks)
-            chunks.delete_many({"userId": user_id, "threadId": thread_id, "attachmentId": current_attachment_id})
-            for index, chunk in enumerate(attachment_chunks):
-                docs.append(
-                    {
-                        "userId": user_id,
-                        "threadId": thread_id,
-                        "messageId": message_id,
-                        "attachmentId": current_attachment_id,
-                        "fileName": str(attachment.get("name") or "Attachment"),
-                        "fileType": str(attachment.get("type") or ""),
-                        "fileSize": int(attachment.get("size") or 0),
-                        "chunkIndex": index,
-                        "chunkText": chunk,
-                        "tokenPreview": tokenize(chunk)[:80],
-                        "embedding": embeddings[index],
-                        "embeddingModel": embedding_model,
-                        "embeddingDimensions": EMBEDDING_DIMENSIONS,
-                        "createdAt": created_at,
-                        "updatedAt": created_at,
-                        "framework": "agno",
-                    }
-                )
-
-        if docs:
-            chunks.insert_many(docs)
-        return [public_chunk(doc) for doc in docs]
-
-    def retrieve_for_agno(
-        self,
-        query: str,
-        agent: Optional[Agent] = None,
-        num_documents: int = 5,
-        **kwargs: Any,
-    ) -> Optional[list[dict[str, Any]]]:
-        results = self.search(
-            user_id=str(kwargs.get("user_id") or ""),
-            thread_id=str(kwargs.get("thread_id") or ""),
-            query=query,
-            limit=num_documents,
-            summary_mode=bool(kwargs.get("summary_mode")),
-            attachment_ids=kwargs.get("attachment_ids") or [],
-        )
-        return [
-            {
-                "content": chunk["chunkText"],
-                "name": chunk["fileName"],
-                "meta_data": {
-                    "fileName": chunk["fileName"],
-                    "chunkIndex": chunk["chunkIndex"],
-                    "relevance": chunk["relevance"],
-                    "vectorScore": chunk["vectorScore"],
-                },
+            file_name = str(attachment.get("name") or "Attachment")
+            metadata = {
+                "userId": user_id,
+                "threadId": thread_id,
+                "messageId": message_id,
+                "attachmentId": current_attachment_id,
+                "fileName": file_name,
+                "fileType": str(attachment.get("type") or ""),
+                "fileSize": int(attachment.get("size") or 0),
+                "embeddingModel": EMBEDDING_MODEL,
+                "embeddingDimensions": EMBEDDING_DIMENSIONS,
+                "createdAt": created_at,
+                "updatedAt": created_at,
+                "framework": "agno",
             }
-            for chunk in results
-        ]
+
+            self.knowledge.remove_vectors_by_metadata(
+                {"userId": user_id, "threadId": thread_id, "attachmentId": current_attachment_id}
+            )
+            self.knowledge.insert(
+                name=file_name,
+                text_content=text,
+                metadata=metadata,
+                upsert=True,
+            )
+            stored.append(
+                {
+                    "id": current_attachment_id,
+                    "userId": user_id,
+                    "threadId": thread_id,
+                    "attachmentId": current_attachment_id,
+                    "fileName": file_name,
+                    "fileType": metadata["fileType"],
+                    "fileSize": metadata["fileSize"],
+                    "chunkIndex": 0,
+                    "chunkText": text[:CHUNK_SIZE],
+                    "text": text[:CHUNK_SIZE],
+                    "embeddingModel": EMBEDDING_MODEL,
+                    "createdAt": created_at,
+                    "framework": "agno",
+                }
+            )
+
+        return stored
 
     def search(
         self,
@@ -452,51 +410,18 @@ class AgnoRagEngine:
         if not user_id or not thread_id:
             raise ValueError("Missing userId or threadId")
         safe_limit = min(max(int(limit or 6), 1), 40)
-        chunks = get_db()["rag_chunks"]
-        base_query: dict[str, Any] = {"userId": user_id, "threadId": thread_id}
-        if attachment_ids:
-            base_query["attachmentId"] = {"$in": [str(value) for value in attachment_ids if str(value)]}
-
-        if summary_mode:
-            return [
-                public_chunk(chunk)
-                for chunk in chunks.find(base_query).sort([("attachmentId", 1), ("chunkIndex", 1)]).limit(safe_limit)
-            ]
-
-        query_tokens = list(dict.fromkeys(tokenize(query)))[:40]
-        query_embeddings, query_embedding_model = embed_texts([query])
-        query_embedding = query_embeddings[0] if query_embeddings else local_embedding(query)
-        candidates: list[dict[str, Any]] = []
-
-        if query_tokens:
-            try:
-                candidates = list(
-                    chunks.find(
-                        {**base_query, "$text": {"$search": " ".join(query_tokens)}},
-                        {"score": {"$meta": "textScore"}},
-                    )
-                    .sort([("score", {"$meta": "textScore"})])
-                    .limit(60)
-                )
-            except Exception:
-                candidates = []
-
-        if not candidates:
-            candidates = list(chunks.find(base_query).sort("createdAt", -1).limit(500))
-
-        ranked = []
-        for chunk in candidates:
-            vector_score = cosine_similarity(query_embedding, chunk.get("embedding") or [])
-            if chunk.get("embeddingModel") and chunk.get("embeddingModel") != query_embedding_model:
-                vector_score *= 0.5
-            relevance = float(chunk.get("score") or 0) + score_chunk(chunk, query_tokens) + vector_score * 20
-            if relevance > 0:
-                chunk["vectorScore"] = vector_score
-                chunk["relevance"] = relevance
-                ranked.append(chunk)
-
-        ranked.sort(key=lambda item: item.get("relevance") or 0, reverse=True)
-        return [public_chunk(chunk) for chunk in ranked[:safe_limit]]
+        ids = [str(value) for value in attachment_ids or [] if str(value)]
+        max_results = safe_limit if len(ids) <= 1 else min(80, safe_limit * 8)
+        documents = self.knowledge.search(
+            query="summary" if summary_mode and not query else query,
+            max_results=max_results,
+            filters=metadata_filter(user_id, thread_id, ids),
+        )
+        chunks = [public_document(document, index) for index, document in enumerate(documents)]
+        if len(ids) > 1:
+            id_set = set(ids)
+            chunks = [chunk for chunk in chunks if str(chunk.get("attachmentId") or "") in id_set]
+        return chunks[:safe_limit]
 
     def answer(self, payload: dict[str, Any]) -> dict[str, Any]:
         user_id = str(payload.get("userId") or "").strip()
@@ -525,18 +450,13 @@ class AgnoRagEngine:
             attachment_ids=attachment_ids,
         )
 
-        agent = self.build_answer_agent(
-            model=str(payload.get("model") or DEFAULT_CHAT_MODEL),
-            user_id=user_id,
-            thread_id=thread_id,
-            summary_mode=summary_mode,
-            attachment_ids=attachment_ids,
-        )
+        agent = self.build_answer_agent(model=str(payload.get("model") or DEFAULT_CHAT_MODEL))
         output = agent.run(
             message,
             user_id=user_id,
             session_id=thread_id,
             metadata={"framework": "agno", "threadId": thread_id},
+            knowledge_filters=metadata_filter(user_id, thread_id, attachment_ids),
         )
         reply = run_content(output)
         if not reply:
@@ -549,10 +469,18 @@ class AgnoRagEngine:
             "sources": sources,
             "storedChunks": len(stored_chunks),
             "framework": "agno",
+            "vectorDb": vector_db_kind(),
         }
 
 
-engine = AgnoRagEngine()
+engine: Optional[AgnoRagEngine] = None
+
+
+def get_engine() -> AgnoRagEngine:
+    global engine
+    if engine is None:
+        engine = AgnoRagEngine()
+    return engine
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -568,6 +496,9 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "service": SERVICE_NAME,
                     "framework": "agno",
+                    "ragMode": "knowledge",
+                    "vectorDb": vector_db_kind(),
+                    "tableName": RAG_TABLE_NAME,
                     "embeddingModel": EMBEDDING_MODEL,
                     "embeddingFallback": LOCAL_EMBEDDING_MODEL,
                 },
@@ -578,12 +509,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         try:
             payload = read_json(self)
+            rag_engine = get_engine()
             if self.path == "/ingest":
-                chunks = engine.ingest(payload)
+                chunks = rag_engine.ingest(payload)
                 send_json(self, 200, {"chunks": chunks, "count": len(chunks), "framework": "agno"})
                 return
             if self.path == "/search":
-                results = engine.search(
+                results = rag_engine.search(
                     user_id=str(payload.get("userId") or "").strip(),
                     thread_id=str(payload.get("threadId") or "").strip(),
                     query=str(payload.get("query") or "").strip(),
@@ -594,7 +526,7 @@ class Handler(BaseHTTPRequestHandler):
                 send_json(self, 200, {"results": results, "framework": "agno"})
                 return
             if self.path == "/answer":
-                result = engine.answer(payload)
+                result = rag_engine.answer(payload)
                 send_json(self, 200, result)
                 return
             send_json(self, 404, {"error": "Not Found", "service": SERVICE_NAME})
@@ -608,5 +540,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     server = ThreadingHTTPServer(("", PORT), Handler)
-    print(f"{SERVICE_NAME} listening on {PORT} with Agno RAG", flush=True)
+    print(f"{SERVICE_NAME} listening on {PORT} with Agno Knowledge RAG ({vector_db_kind()})", flush=True)
     server.serve_forever()

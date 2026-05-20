@@ -72,16 +72,31 @@ services:
     command: sh -c "pip install --no-cache-dir -r requirements.txt && python server.py"
     depends_on:
       - llm-service
+      - rag-postgres
     env_file:
       - ./.env.local
     environment:
       - PORT=4005
       - SERVICE_NAME=rag-service
       - LLM_SERVICE_URL=http://llm-service:4004
+      - RAG_VECTOR_DB=pgvector
+      - RAG_DB_URL=postgresql+psycopg://rag:rag@rag-postgres:5432/rag
     volumes:
       - ./services/rag-service:/app
     ports:
       - "4005:4005"
+
+  rag-postgres:
+    image: pgvector/pgvector:pg16
+    container_name: myapp-rag-postgres
+    environment:
+      - POSTGRES_USER=rag
+      - POSTGRES_PASSWORD=rag
+      - POSTGRES_DB=rag
+    volumes:
+      - rag-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
 
   llm-service:
     image: node:20-alpine
@@ -98,3 +113,6 @@ services:
       - ./services/llm-service:/app
     ports:
       - "4004:4004"
+
+volumes:
+  rag-postgres-data:

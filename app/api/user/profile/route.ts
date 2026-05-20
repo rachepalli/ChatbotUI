@@ -62,6 +62,7 @@ export async function PATCH(request: Request) {
       mongoose.connection.db?.collection("threads").updateMany({ userId: session.user.email }, { $set: { userId: updates.email } }),
       mongoose.connection.db?.collection("messages").updateMany({ userId: session.user.email }, { $set: { userId: updates.email } }),
       mongoose.connection.db?.collection("rag_chunks").updateMany({ userId: session.user.email }, { $set: { userId: updates.email } }),
+      mongoose.connection.db?.collection("agno_rag_documents").updateMany({ "meta_data.userId": session.user.email }, { $set: { "meta_data.userId": updates.email } }),
     ]);
   }
 
