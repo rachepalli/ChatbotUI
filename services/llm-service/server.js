@@ -485,7 +485,7 @@ async function generateWithFallback(message, requestedModel, timeoutMs, attachme
   const primary = await generateWithRetry(message, model, timeoutMs, attachments);
   if (!primary.error) return primary;
 
-  const fallbackModels = ["llama-8b", "llama-70b"].filter((fallbackModel) => fallbackModel !== model);
+  const fallbackModels = ["gemini-2.5-flash-lite", "gemini-2.5-flash"].filter((fallbackModel) => fallbackModel !== model);
 
   for (const fallbackModel of fallbackModels) {
     const fallback = await generateWithRetry(message, fallbackModel, timeoutMs, attachments);

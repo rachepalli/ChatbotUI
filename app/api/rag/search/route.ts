@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { proxyJson } from "@/lib/http/service-proxy";
 
-const gatewayUrl = process.env.API_GATEWAY_URL || "http://localhost:8080";
+const gatewayUrl = process.env.API_GATEWAY_URL;
 const chatServiceUrl = process.env.CHAT_SERVICE_URL || "http://localhost:4003";
 
 export async function POST(req: NextRequest) {
@@ -16,14 +16,15 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const headers = { "x-user-id": session.user.email };
 
-    let response;
-    try {
+    let response = null;
+    if (gatewayUrl) try {
       response = await proxyJson({
         baseUrl: gatewayUrl,
         path: "/api/chat/rag/search",
         method: "POST",
         body,
         headers,
+        timeoutMs: 2000,
       });
     } catch {
       response = null;

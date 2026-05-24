@@ -28,7 +28,33 @@ export default function InputArea({ onSend, disabled }: InputAreaProps) {
     onSend(text);
   };
 
+  const handleDelete = (textarea: HTMLTextAreaElement, key: "Backspace" | "Delete") => {
+    const value = textarea.value;
+    const start = textarea.selectionStart ?? value.length;
+    const end = textarea.selectionEnd ?? start;
+    const hasSelection = start !== end;
+
+    if (!value || (key === "Backspace" && start === 0 && !hasSelection) || (key === "Delete" && start === value.length && !hasSelection)) {
+      return;
+    }
+
+    const nextStart = hasSelection ? start : key === "Backspace" ? Math.max(0, start - 1) : start;
+    const nextEnd = hasSelection ? end : key === "Backspace" ? start : Math.min(value.length, start + 1);
+    const nextValue = `${value.slice(0, nextStart)}${value.slice(nextEnd)}`;
+
+    setInput(nextValue);
+    window.setTimeout(() => {
+      textarea.focus();
+      textarea.setSelectionRange(nextStart, nextStart);
+    }, 0);
+  };
+
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.key === "Backspace" || e.key === "Delete") && !e.altKey && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      handleDelete(e.currentTarget, e.key);
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();

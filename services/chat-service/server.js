@@ -2,6 +2,7 @@ const http = require("http");
 const crypto = require("crypto");
 const { MongoClient } = require("mongodb");
 const zlib = require("zlib");
+const localStore = require("../local-chat-store");
 
 let mammoth = null;
 try {
@@ -12,11 +13,12 @@ try {
 
 const port = Number(process.env.PORT || 4003);
 const serviceName = process.env.SERVICE_NAME || "chat-service";
-const mongoUri = process.env.MONGODB_URI;
+const mongoUri = process.env.MONGODB_DIRECT_URI || process.env.MONGODB_URI;
 const dbName = process.env.MONGODB_DB;
 const llmServiceUrl = (process.env.LLM_SERVICE_URL || "http://localhost:4004").replace(/\/$/, "");
 const ragServiceUrl = (process.env.RAG_SERVICE_URL || "http://localhost:4005").replace(/\/$/, "");
 const tavilySearchUrl = "https://api.tavily.com/search";
+const ragSummaryLimit = Number(process.env.RAG_SUMMARY_MAX_CHUNKS || 24);
 
 let mongoClient;
 let db;
@@ -34,17 +36,41 @@ async function readJson(req) {
 }
 
 async function getDb() {
-  if (!mongoUri) throw new Error("MONGODB_URI is required");
+  if (!mongoUri) throw new Error("MONGODB_DIRECT_URI or MONGODB_URI is required");
 
   if (!mongoClient) {
     mongoClient = new MongoClient(mongoUri);
-    await mongoClient.connect();
-    db = mongoClient.db(dbName);
-    await db.collection("threads").createIndex({ chatId: 1, userId: 1 }, { unique: true });
-    await db.collection("messages").createIndex({ threadId: 1, userId: 1, createdAt: 1 });
+    try {
+      await mongoClient.connect();
+      db = mongoClient.db(dbName);
+      await db.collection("threads").createIndex({ chatId: 1, userId: 1 }, { unique: true });
+      await db.collection("messages").createIndex({ threadId: 1, userId: 1, createdAt: 1 });
+    } catch (error) {
+      await mongoClient.close().catch(() => {});
+      mongoClient = undefined;
+      db = undefined;
+      throw error;
+    }
   }
 
+  if (!db) throw new Error("MongoDB connection is not ready");
   return db;
+}
+
+function isDatabaseUnavailable(error) {
+  const message = String(error?.message || error || "");
+  return (
+    error?.name === "MongoServerSelectionError" ||
+    error?.name === "MongoNetworkError" ||
+    message.includes("MONGODB_DIRECT_URI") ||
+    message.includes("MONGODB_URI") ||
+    message.includes("MongoDB connection is not ready") ||
+    message.includes("SSL routines") ||
+    message.includes("tlsv1 alert") ||
+    message.includes("Could not connect to any servers") ||
+    message.includes("querySrv") ||
+    message.includes("ECONNREFUSED")
+  );
 }
 
 function getUserId(req) {
@@ -73,6 +99,21 @@ function roleLabel(role) {
   return role === "assistant" ? "Assistant" : "User";
 }
 
+function assistantBehaviorInstructions() {
+  return [
+    "Assistant behavior:",
+    "You are an intelligent, helpful, knowledgeable AI assistant for programming, technology, and general questions.",
+    "Respond naturally and conversationally, with a polished style similar to modern assistants such as ChatGPT, Gemini, Copilot, or Grok.",
+    "Treat this chat as one continuous conversation. Use the previous conversation to understand follow-up requests.",
+    "When the user says things like explain in detail, more details, elaborate, deeper, in depth, continue, or tell me more, assume they mean the previous topic and expand it directly.",
+    "Never ask for clarification when the previous topic makes the follow-up clear.",
+    "If the user clearly changes topic with a standalone question, answer the new topic smoothly.",
+    "Use clear headings, bullets, examples, analogies, and code blocks when helpful.",
+    "For technical topics, include practical insights and concise examples.",
+    "Python handling: if the user first asks what Python is, give a concise friendly introduction. If a later follow-up asks for more detail, expand on Python with history, features, syntax basics, use cases, ecosystem, advantages, disadvantages, and practical examples.",
+  ].join("\n");
+}
+
 function formatConversationHistory(history) {
   const lines = history
     .filter((item) => item?.content)
@@ -85,24 +126,27 @@ function formatConversationHistory(history) {
     lines.join("\n"),
     "",
     "Use this context to understand follow-up questions. If the user says things like it, that, this topic, same, explain more, or asks a short related question, infer the subject from the previous conversation and answer directly. Ask for clarification only when the previous conversation truly does not identify the subject.",
+    "If the current user question is a standalone general question or clearly starts a new topic, answer it directly on its own. Do not force it to relate to the previous conversation.",
   ].join("\n");
 }
 
 function buildContextualPrompt(message, conversationContext) {
-  if (!conversationContext) return message;
-
   return [
+    assistantBehaviorInstructions(),
+    conversationContext ? "" : null,
     conversationContext,
     "",
     "Current user question:",
     message,
-  ].join("\n");
+  ]
+    .filter((item) => item !== null && item !== undefined && item !== "")
+    .join("\n");
 }
 
 function buildContextualQuery(message, history) {
   const recentUserContext = history
     .filter((item) => item?.role === "user" && item?.content)
-    .slice(-4)
+    .slice(-6)
     .map((item) => compactConversationText(item.content, 300))
     .join("\n");
 
@@ -187,13 +231,38 @@ function decodeEntities(value) {
 }
 
 function normalizeExtractedText(value) {
-  return String(value || "")
+  const text = String(value || "")
+    .replace(/\u0000/g, "")
+    .replace(/[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, " ")
+    .replace(/\ufffd/g, " ")
+    .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, " ")
     .replace(/\r/g, "\n")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .replace(/[ \t]{2,}/g, " ")
-    .trim()
-    .slice(0, 24000);
+    .trim();
+
+  return text
+    .split(/\n{2,}|(?<=[.!?])\s+/)
+    .map((segment) => segment.trim())
+    .filter(isReadableExtractedSegment)
+    .join("\n\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .slice(0, 24000)
+    .trim();
+}
+
+function isReadableExtractedSegment(segment) {
+  const text = String(segment || "").trim();
+  if (!text) return false;
+  const words = text.match(/[A-Za-z][A-Za-z-]{2,}/g) || [];
+  const wordChars = words.join("").length;
+  if (text.length < 80) return words.length >= 4 && wordChars / text.length >= 0.32;
+
+  const symbolChars = (text.match(/[^A-Za-z0-9\s.,;:!?'"()[\]{}\/\\\-+*&%#=@<>|`~^]/g) || []).length;
+  const repeatedTinyTokens = (text.match(/\b([A-Za-z]{1,2})\b(?:\s+\1\b){4,}/g) || []).length;
+
+  return words.length >= 8 && wordChars / text.length >= 0.28 && symbolChars / text.length <= 0.03 && repeatedTinyTokens === 0;
 }
 
 function bufferFromDataUrl(dataUrl) {
@@ -398,20 +467,39 @@ function decodePdfHexString(value) {
   for (let i = 0; i < even.length; i += 2) {
     bytes.push(parseInt(even.slice(i, i + 2), 16));
   }
-  return Buffer.from(bytes).toString("utf8").replace(/\u0000/g, "");
+  const buffer = Buffer.from(bytes);
+  if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
+    let text = "";
+    for (let index = 2; index + 1 < buffer.length; index += 2) {
+      text += String.fromCharCode(buffer.readUInt16BE(index));
+    }
+    return text;
+  }
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+    let text = "";
+    for (let index = 2; index + 1 < buffer.length; index += 2) {
+      text += String.fromCharCode(buffer.readUInt16LE(index));
+    }
+    return text;
+  }
+  return buffer.toString("utf8").replace(/\u0000/g, "");
 }
 
 function extractPdfTextFromContent(content) {
   const text = [];
-  const literalPattern = /\((?:\\.|[^\\)])*\)\s*(?:Tj|'|"|\])/g;
-  const hexPattern = /<([0-9a-fA-F\s]+)>\s*(?:Tj|'|"|\])/g;
+  const textBlocks = content.match(/BT[\s\S]*?ET/g) || [content];
+  const literalPattern = /\((?:\\.|[^\\)])*\)/g;
+  const hexPattern = /<([0-9a-fA-F\s]{4,})>/g;
   let match;
 
-  while ((match = literalPattern.exec(content))) {
-    text.push(decodePdfLiteralString(match[0].replace(/\s*(?:Tj|'|"|\])$/, "").slice(1, -1)));
-  }
-  while ((match = hexPattern.exec(content))) {
-    text.push(decodePdfHexString(match[1]));
+  for (const block of textBlocks) {
+    if (!/(Tj|TJ|'|")/.test(block)) continue;
+    while ((match = literalPattern.exec(block))) {
+      text.push(decodePdfLiteralString(match[0].slice(1, -1)));
+    }
+    while ((match = hexPattern.exec(block))) {
+      text.push(decodePdfHexString(match[1]));
+    }
   }
 
   return text.join(" ");
@@ -430,7 +518,11 @@ function extractPdfText(buffer) {
       try {
         streams.push(zlib.inflateSync(streamBytes).toString("latin1"));
       } catch {
-        streams.push(match[2]);
+        try {
+          streams.push(zlib.inflateRawSync(streamBytes).toString("latin1"));
+        } catch {
+          streams.push(match[2]);
+        }
       }
     } else {
       streams.push(match[2]);
@@ -549,7 +641,8 @@ async function storeRagChunks(_database, { userId, threadId, messageId, attachme
       createdAt,
     });
     return Array.isArray(data.chunks) ? data.chunks : [];
-  } catch {
+  } catch (error) {
+    console.warn(`[${serviceName}] RAG ingest failed: ${error instanceof Error ? error.message : String(error)}`);
     return [];
   }
 }
@@ -565,9 +658,38 @@ async function retrieveRagChunks(_database, { userId, threadId, query, limit = 6
       attachmentIds: attachments.filter((attachment) => attachment.text).map(attachmentId),
     });
     return Array.isArray(data.results) ? data.results : [];
-  } catch {
+  } catch (error) {
+    console.warn(`[${serviceName}] RAG search failed: ${error instanceof Error ? error.message : String(error)}`);
     return [];
   }
+}
+
+async function threadHasRagDocuments({ userId, threadId }) {
+  try {
+    const data = await callRagService(
+      "/status",
+      {
+        userId,
+        threadId,
+      },
+      8000
+    );
+    return Boolean(data.hasDocuments);
+  } catch (error) {
+    console.warn(`[${serviceName}] RAG status failed: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
+function historyHasDocumentAttachment(history) {
+  return history.some((item) => {
+    const attachments = Array.isArray(item?.attachments) ? item.attachments : [];
+    return attachments.some((attachment) => {
+      const type = String(attachment?.type || "").toLowerCase();
+      const kind = String(attachment?.kind || "").toLowerCase();
+      return kind === "document" || type === "application/pdf" || type.includes("wordprocessingml") || type.startsWith("text/");
+    });
+  });
 }
 
 async function answerWithAgnoRag(_database, { userId, threadId, message, query, model, limit = 8, summaryMode = false, attachments = [], createdAt }) {
@@ -591,6 +713,7 @@ async function answerWithAgnoRag(_database, { userId, threadId, message, query, 
       model,
       limit,
       summaryMode,
+      detailMode: isDetailedRequest(message),
       attachments: ingestableAttachments,
       createdAt,
     },
@@ -608,7 +731,13 @@ async function answerWithAgnoRag(_database, { userId, threadId, message, query, 
 }
 
 function isSummaryRequest(message) {
-  return /\b(summarize|summary|overview|brief|explain\s+this|analyze\s+this|key\s+points|main\s+points)\b/i.test(
+  return /\b(summarize|summary|overview|brief|key\s+points|main\s+points)\b/i.test(
+    String(message || "")
+  );
+}
+
+function isDetailedRequest(message) {
+  return /\b(explain\s+in\s+detail|detail(?:ed)?\s+explain|explain\s+deeply|in\s+detail|detailed\s+explanation|elaborate|in\s+depth|deep\s+dive|more\s+detail|more\s+details)\b/i.test(
     String(message || "")
   );
 }
@@ -625,31 +754,88 @@ function shouldUseWebSearch(message) {
 
 function shouldUseRag(message, attachments) {
   if (attachments.some((attachment) => attachment.text)) return true;
+  if (attachments.some((attachment) => attachment.kind === "document")) return true;
 
   return /\b(document|documents|file|files|attachment|attached|pdf|docx|chunk|chunks|uploaded|based on|according to)\b/i.test(
     String(message || "")
   );
 }
 
+function isLikelyRagFollowup(message) {
+  const value = String(message || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!value) return false;
+  if (/\b(this|that|it|its|above|previous|same|these|those)\b/.test(value)) return true;
+  if (/\b(summary|summarize|overview|brief|key points|main points|main topic|important details|notes|explain|explanation|describe|elaborate|detail|detailed|in depth|deep dive)\b/.test(value)) {
+    return true;
+  }
+  if (/\b(in|from|according to|based on)\s+(the\s+)?(document|file|pdf|attachment|notes)\b/.test(value)) return true;
+  if (
+    /^(what|which|how|why|when|where)\b/.test(value) &&
+    /\b(topic|point|points|section|chapter|table|figure|difference|compare|advantages|features|steps|process|definition|marker|term|keyword|item|value|name|date|fact)\b/.test(value)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function formatRagContext(chunks, options = {}) {
   if (!chunks.length) return "";
 
+  const maxChunks = options.summaryMode || options.detailMode ? ragSummaryLimit : 6;
+  const maxChars = 1400;
+  const sourceChars = chunks.reduce((total, chunk) => total + String(chunk.chunkText || chunk.text || "").length, 0);
+  const summaryLengthInstruction =
+    sourceChars < 2500
+      ? "Keep the summary short: one brief overview paragraph and 3 to 5 bullets."
+      : sourceChars < 9000
+        ? "Use a medium-length summary: a short overview plus concise bullets for the main topics."
+        : "Use a longer summary only because the document is long: cover all major topics with concise sections.";
   const blocks = chunks
+    .slice(0, maxChunks)
     .map((chunk, index) => {
-      return `[RAG ${index + 1}] ${chunk.fileName} (chunk ${chunk.chunkIndex + 1})\n${String(chunk.chunkText || chunk.text || "").slice(0, 1600)}`;
+      return `[Source ${index + 1}] ${chunk.fileName} part ${chunk.chunkIndex + 1}\n${String(chunk.chunkText || chunk.text || "").slice(0, maxChars)}`;
     })
     .join("\n\n");
 
   return [
-    "Use the retrieved Agno RAG chunks below when they are relevant.",
+    "Use the uploaded document source material below when it is relevant.",
     options.summaryMode
-      ? "The user is asking for a summary or analysis. Produce the best summary possible from these chunks instead of asking for a more specific question."
-      : "Ground answers in these chunks. If the chunks do not contain the answer, say what is missing.",
-    "Never say you do not have access to the document when RAG chunks are provided.",
+      ? `You are an intelligent document analysis assistant. The user is asking for a full-document summary or analysis. ${summaryLengthInstruction} First infer the complete document structure: title, chapters, headings, subheadings, sections, tables, important concepts, and all major topics. Cover every major topic, section, workflow, list, definition, and important fact present in this source material, but do not over-explain small documents. Generate a structured section-by-section summary, not a raw chunk dump. Use Markdown bold only for topic headings and section headings. Do not bold normal body sentences or bullet text. Keep body text plain, concise, and easy to scan. Prefer paraphrasing over copying. Use only facts explicitly present in this source material. Do not mention chunks, retrieval, RAG, source numbers, missing-information sections, limitation sections, recommendation sections, critique sections, or filler endings like no additional information is available unless the user asks for them.`
+      : options.detailMode
+        ? "You are an intelligent document analysis assistant. The user is asking for a detailed explanation. Explain the current document/topic deeply using the uploaded document source material. If the request refers broadly to it, this document, everything, or the previous document, explain all major sections in depth. If the request names a specific heading, topic, concept, or chapter, explain only that topic deeply. Cover definitions, concepts, workflows, features, examples, benefits, limitations, tables, and important facts when they are present in the document. Rewrite content in simpler and clearer language. Use Markdown bold only for topic headings and section headings. Do not bold normal body sentences or bullet text. Never dump retrieved chunks, repeat OCR text, or copy paragraphs directly. Do not mention chunks, retrieval, RAG, or source numbers."
+        : "Write a polished ChatGPT-style response grounded in this source material. If the user asks about a specific heading, topic, concept, or chapter, explain only that topic deeply and avoid summarizing the entire document. Synthesize related source material instead of copying raw paragraphs or dumping retrieved chunks. Match the user's requested depth. If the source material does not contain the answer, say what is missing.",
+    "Never say you do not have access to the document when source material is provided.",
     "",
-    "Retrieved document chunks:",
+    "Uploaded document source material:",
     blocks,
   ].join("\n");
+}
+
+function uniqueRagSources(chunks) {
+  const seen = new Set();
+  const sources = [];
+  for (const chunk of chunks) {
+    const key = [
+      chunk.fileName || "Uploaded document",
+      Number.isFinite(chunk.chunkIndex) ? chunk.chunkIndex : sources.length,
+    ].join(":");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    sources.push(chunk);
+  }
+  return sources;
+}
+
+function cleanRagAssistantContent(reply, error, chunks, message) {
+  const text = String(reply || "").trim();
+  if (!error) return text;
+  return text || "I found relevant uploaded document content, but the summary generation step is temporarily unavailable. Please try again.";
+}
+
+function extractiveRagReply(message, chunks) {
+  return chunks.length
+    ? "I found relevant uploaded document content, but the summary generation step is temporarily unavailable. Please try again."
+    : "I could not find relevant uploaded document content for that question.";
 }
 
 function formatAttachmentStatus(attachments, storedChunks) {
@@ -863,68 +1049,116 @@ async function sendMessage(req, res) {
 
   const normalizedAttachments = await normalizeAttachments(attachments);
 
-  const database = await getDb();
-  const threads = database.collection("threads");
-  const messages = database.collection("messages");
   const now = new Date();
-  const previousMessages = await messages
-    .find({ threadId: chatId, userId })
-    .sort({ createdAt: -1 })
-    .limit(12)
-    .toArray();
+  let database = null;
+  let threads = null;
+  let messages = null;
+  let databaseError = null;
+  let previousMessages = [];
+
+  try {
+    database = await getDb();
+    threads = database.collection("threads");
+    messages = database.collection("messages");
+    previousMessages = await messages
+      .find({ threadId: chatId, userId })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .toArray();
+  } catch (error) {
+    if (!isDatabaseUnavailable(error)) throw error;
+    databaseError = error;
+    console.warn(`[${serviceName}] database unavailable; continuing chat without persistence: ${error.message}`);
+    previousMessages = localStore.listMessages(userId, chatId).slice(-20);
+  }
+
   const conversationHistory = previousMessages.reverse();
   const conversationContext = formatConversationHistory(conversationHistory);
   const contextualPrompt = buildContextualPrompt(message, conversationContext);
   const contextualQuery = buildContextualQuery(message, conversationHistory);
 
-  await threads.updateOne(
-    { chatId, userId },
-    {
-      $setOnInsert: {
-        chatId,
-        userId,
-        title: "New Chat",
-        pinned: false,
-        archived: false,
-        createdAt: now,
+  if (threads) {
+    await threads.updateOne(
+      { chatId, userId },
+      {
+        $setOnInsert: {
+          chatId,
+          userId,
+          title: "New Chat",
+          pinned: false,
+          archived: false,
+          createdAt: now,
+        },
+        $set: { updatedAt: now },
       },
-      $set: { updatedAt: now },
-    },
-    { upsert: true }
-  );
+      { upsert: true }
+    );
+  } else if (databaseError) {
+    localStore.upsertThread(userId, chatId, {
+      title: "New Chat",
+      pinned: false,
+      archived: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
 
-  const userMessageResult = await messages.insertOne({
-    threadId: chatId,
-    userId,
-    role: "user",
-    content: message,
-    attachments: normalizedAttachments.map(publicAttachment),
-    createdAt: now,
-    updatedAt: now,
-  });
+  const userMessageResult = messages
+    ? await messages.insertOne({
+        threadId: chatId,
+        userId,
+        role: "user",
+        content: message,
+        attachments: normalizedAttachments.map(publicAttachment),
+        createdAt: now,
+        updatedAt: now,
+      })
+    : localStore.insertMessage({
+        threadId: chatId,
+        userId,
+        role: "user",
+        content: message,
+        attachments: normalizedAttachments.map(publicAttachment),
+        createdAt: now,
+        updatedAt: now,
+      });
 
-  const userMessageCount = await messages.countDocuments({
-    threadId: chatId,
-    userId,
-    role: "user",
-  });
+  const userMessageCount = messages
+    ? await messages.countDocuments({
+        threadId: chatId,
+        userId,
+        role: "user",
+      })
+    : localStore.countUserMessages(userId, chatId);
 
-  if (userMessageCount === 1) {
+  if (threads && userMessageCount === 1) {
     await threads.updateOne(
       { chatId, userId },
       { $set: { title: buildAutoTitle(message), updatedAt: new Date() } }
     );
-  } else {
+  } else if (threads) {
     await threads.updateOne(
       { chatId, userId },
       { $set: { updatedAt: new Date() } }
     );
+  } else if (databaseError && userMessageCount === 1) {
+    localStore.upsertThread(userId, chatId, { title: buildAutoTitle(message), updatedAt: new Date() });
+  } else if (databaseError) {
+    localStore.upsertThread(userId, chatId, { updatedAt: new Date() });
   }
 
   const ragQuery = buildRagRetrievalQuery(contextualQuery, normalizedAttachments);
-  const summaryMode = isSummaryRequest(message);
+  const detailMode = isDetailedRequest(message);
+  const summaryMode = isSummaryRequest(message) && !detailMode;
   const useWebSearch = typeof webSearch === "boolean" ? webSearch : shouldUseWebSearch(message);
-  const useRag = shouldUseRag(message, normalizedAttachments);
+  const hasDocumentHistory = historyHasDocumentAttachment(conversationHistory);
+  const explicitRagRequest = shouldUseRag(message, normalizedAttachments);
+  const likelyRagFollowup = isLikelyRagFollowup(message);
+  const hasExistingRagDocuments =
+    likelyRagFollowup && !normalizedAttachments.length
+      ? hasDocumentHistory || (await threadHasRagDocuments({ userId, threadId: chatId }))
+      : false;
+  const useRag = explicitRagRequest || (hasExistingRagDocuments && likelyRagFollowup);
   let storedChunks = [];
   let ragChunks = [];
   let search = { sources: [], error: null };
@@ -936,10 +1170,10 @@ async function sendMessage(req, res) {
       const ragAnswer = await answerWithAgnoRag(database, {
         userId,
         threadId: chatId,
-        message: contextualPrompt,
+        message,
         query: ragQuery,
         model,
-        limit: summaryMode ? 30 : 8,
+        limit: summaryMode || detailMode ? ragSummaryLimit : 8,
         summaryMode,
         attachments: normalizedAttachments,
         createdAt: now,
@@ -954,8 +1188,9 @@ async function sendMessage(req, res) {
         fallbackError: undefined,
         error: ragAnswer.error,
       };
-      assistantContent = ragAnswer.reply;
-    } catch {
+      assistantContent = cleanRagAssistantContent(ragAnswer.reply, ragAnswer.error, ragChunks, message);
+    } catch (error) {
+      console.warn(`[${serviceName}] Agno RAG answer failed: ${error instanceof Error ? error.message : String(error)}`);
       storedChunks = await storeRagChunks(database, {
         userId,
         threadId: chatId,
@@ -967,21 +1202,25 @@ async function sendMessage(req, res) {
         userId,
         threadId: chatId,
         query: ragQuery,
-        limit: summaryMode ? 30 : 8,
+        limit: summaryMode || detailMode ? ragSummaryLimit : 8,
         summaryMode,
         attachments: normalizedAttachments,
       });
-      const ragContext = formatRagContext(ragChunks, { summaryMode });
+      const ragContext = formatRagContext(ragChunks, { summaryMode, detailMode });
       const attachmentStatus = formatAttachmentStatus(normalizedAttachments, storedChunks);
       const contextBlocks = [ragContext, attachmentStatus].filter(Boolean).join("\n\n");
       const taskInstruction = summaryMode
-        ? "Task: Summarize the attached/retrieved document clearly. Include the main topic, core sections or ideas, and important details found in the chunks. Do not ask the user for a more specific question."
-        : "";
+        ? "Task: Summarize the complete attached/retrieved document as a polished ChatGPT-style answer. Infer the document hierarchy and cover all major headings/topics specified in the document section-by-section. Keep the length proportional to the document size. Do not dump chunks or copy OCR text. Do not ask the user for a more specific question. Do not mention chunks, retrieval, RAG, source numbers, missing-information sections, limitation sections, recommendation sections, critique sections, or filler endings like no additional information is available unless the user asks for them."
+        : detailMode
+          ? "Task: Give a detailed explanation of the current uploaded document/topic. If the user refers broadly to it or the previous document, explain all major sections in depth. If the user names a specific topic, explain only that topic. Expand the concepts, definitions, workflows, features, examples, and important facts found in the source material. Do not dump chunks or copy OCR text. Do not ask the user to repeat the document or topic when the previous context is clear."
+          : "";
       const llmMessage = contextBlocks
-        ? `${contextBlocks}\n\n${taskInstruction ? `${taskInstruction}\n\n` : ""}${contextualPrompt}`
-        : contextualPrompt;
+        ? `${contextBlocks}\n\n${taskInstruction ? `${taskInstruction}\n\n` : ""}${message}`
+        : message;
       llm = await generateReply(llmMessage, model, imagePartsForLlm(normalizedAttachments));
-      assistantContent = `Note: Agno RAG answer failed, so the legacy RAG fallback was used.\n\n${llm.reply}`;
+      assistantContent = llm.error
+        ? "I found relevant uploaded document content, but the summary generation step is temporarily unavailable. Please try again."
+        : llm.reply;
     }
   } else {
     const webSearchQuery = buildWebSearchQuery(contextualQuery, ragChunks, normalizedAttachments);
@@ -998,16 +1237,33 @@ async function sendMessage(req, res) {
     assistantContent = `${searchErrorNote}${reply}`;
   }
 
-  await messages.insertOne({
-    threadId: chatId,
-    userId,
-    role: "assistant",
-    content: assistantContent,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  });
+  if (messages) {
+    await messages.insertOne({
+      threadId: chatId,
+      userId,
+      role: "assistant",
+      content: assistantContent,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+  } else if (databaseError) {
+    localStore.insertMessage({
+      threadId: chatId,
+      userId,
+      role: "assistant",
+      content: assistantContent,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+  }
 
-  const thread = await threads.findOne({ chatId, userId });
+  const thread = threads ? await threads.findOne({ chatId, userId }) : localStore.findThread(userId, chatId);
+  const persistenceError = databaseError
+    ? {
+        code: "DATABASE_UNAVAILABLE",
+        message: "MongoDB is unavailable, so this chat was saved to local development history.",
+      }
+    : null;
 
   sendJson(res, 200, {
     reply: assistantContent,
@@ -1020,7 +1276,7 @@ async function sendMessage(req, res) {
     ragMode: useRag ? "auto" : "off",
     searchSources: search.sources,
     searchError: search.error,
-    ragSources: ragChunks.map((chunk) => ({
+    ragSources: uniqueRagSources(ragChunks).map((chunk) => ({
       fileName: chunk.fileName,
       chunkIndex: chunk.chunkIndex,
       relevance: chunk.relevance,
@@ -1029,7 +1285,8 @@ async function sendMessage(req, res) {
     })),
     storedRagChunks: storedChunks.length,
     thread: publicDocument(thread),
-    error: llm.error,
+    error: llm.error || persistenceError,
+    persistenceError,
   });
 }
 
@@ -1046,14 +1303,26 @@ async function listMessages(req, res, url) {
     return;
   }
 
-  const database = await getDb();
-  const messages = await database
-    .collection("messages")
-    .find({ threadId: chatId, userId })
-    .sort({ createdAt: 1 })
-    .toArray();
+  try {
+    const database = await getDb();
+    const messages = await database
+      .collection("messages")
+      .find({ threadId: chatId, userId })
+      .sort({ createdAt: 1 })
+      .toArray();
 
-  sendJson(res, 200, { messages: messages.map(publicDocument) });
+    sendJson(res, 200, { messages: messages.map(publicDocument) });
+  } catch (error) {
+    if (!isDatabaseUnavailable(error)) throw error;
+    console.warn(`[${serviceName}] message history unavailable: ${error.message}`);
+    sendJson(res, 200, {
+      messages: localStore.listMessages(userId, chatId).map(publicDocument),
+      error: {
+        code: "DATABASE_UNAVAILABLE",
+        message: "Using local development chat history because MongoDB is unavailable.",
+      },
+    });
+  }
 }
 
 async function searchRag(req, res) {
@@ -1070,9 +1339,8 @@ async function searchRag(req, res) {
     return;
   }
 
-  const database = await getDb();
   const safeLimit = Math.min(Math.max(Number(limit || 8), 1), 20);
-  const chunks = await retrieveRagChunks(database, {
+  const chunks = await retrieveRagChunks(null, {
     userId,
     threadId: chatId,
     query: cleanedQuery,
@@ -1114,8 +1382,18 @@ const server = http.createServer(async (req, res) => {
   try {
     await handle(req, res);
   } catch (error) {
+    console.error(`[${serviceName}] ${req.method} ${req.url} failed:`, error);
+    if (isDatabaseUnavailable(error)) {
+      sendJson(res, 503, {
+        error: "Database unavailable",
+        message: "Chat storage is temporarily unavailable. Check MongoDB Atlas network access or use a local MongoDB URI.",
+        service: serviceName,
+      });
+      return;
+    }
     sendJson(res, error instanceof SyntaxError ? 400 : 500, {
       error: error instanceof SyntaxError ? "Invalid JSON body" : "Internal server error",
+      message: error instanceof Error ? error.message : String(error),
       service: serviceName,
     });
   }

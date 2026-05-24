@@ -14,6 +14,10 @@ export async function sendPasswordResetEmail({
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
   const from = process.env.SMTP_FROM || process.env.SMTP_USER;
+  const hasPlaceholderConfig =
+    user === "your-email@gmail.com" ||
+    from === "your-email@gmail.com" ||
+    pass === "your-16-char-app-password";
 
   const html = `
     <div style="font-family: Arial, sans-serif; line-height: 1.5;">
@@ -30,7 +34,7 @@ export async function sendPasswordResetEmail({
   `;
 
   // Local/dev fallback so the flow is testable without SMTP.
-  if (!host || !user || !pass || !from) {
+  if (!host || !user || !pass || !from || hasPlaceholderConfig) {
     console.log(`[PASSWORD RESET] Email to ${to}: ${resetUrl}`);
     return;
   }

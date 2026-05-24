@@ -3,8 +3,9 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { proxyJson } from "@/lib/http/service-proxy";
 
-const gatewayUrl = process.env.API_GATEWAY_URL || "http://localhost:8080";
+const gatewayUrl = process.env.API_GATEWAY_URL;
 const chatServiceUrl = process.env.CHAT_SERVICE_URL || "http://localhost:4003";
+const chatServiceTimeoutMs = 75000;
 
 export async function POST(req: NextRequest) {
   try {
@@ -16,14 +17,15 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const headers = { "x-user-id": session.user.email };
 
-    let response;
-    try {
+    let response = null;
+    if (gatewayUrl) try {
       response = await proxyJson({
         baseUrl: gatewayUrl,
         path: "/api/chat",
         method: "POST",
         body,
         headers,
+        timeoutMs: 2000,
       });
     } catch {
       response = null;
@@ -36,15 +38,17 @@ export async function POST(req: NextRequest) {
         method: "POST",
         body,
         headers,
+        timeoutMs: chatServiceTimeoutMs,
       });
     }
 
     return Response.json(response.data, { status: response.status });
-  } catch {
+  } catch (error) {
+    console.error("Chat route failed", error);
     return Response.json(
       {
         error: "Internal Server Error",
-        reply: "AI pipeline failed",
+        reply: error instanceof Error ? error.message : "AI pipeline failed",
       },
       { status: 500 }
     );

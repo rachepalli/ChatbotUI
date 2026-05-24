@@ -6,7 +6,7 @@ const nodemailer = require("nodemailer");
 
 const port = Number(process.env.PORT || 4001);
 const serviceName = process.env.SERVICE_NAME || "auth-service";
-const mongoUri = process.env.MONGODB_URI;
+const mongoUri = process.env.MONGODB_DIRECT_URI || process.env.MONGODB_URI;
 const dbName = process.env.MONGODB_DB;
 const resetTokenTtlMs = 15 * 60 * 1000;
 
@@ -38,7 +38,7 @@ async function readJson(req) {
 
 async function getUsersCollection() {
   if (!mongoUri) {
-    throw new Error("MONGODB_URI is required");
+    throw new Error("MONGODB_DIRECT_URI or MONGODB_URI is required");
   }
 
   if (!mongoClient) {
@@ -61,6 +61,10 @@ async function sendPasswordResetEmail({ to, resetUrl }) {
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
   const from = process.env.SMTP_FROM || process.env.SMTP_USER;
+  const hasPlaceholderConfig =
+    user === "your-email@gmail.com" ||
+    from === "your-email@gmail.com" ||
+    pass === "your-16-char-app-password";
 
   const html = `
     <div style="font-family: Arial, sans-serif; line-height: 1.5;">
@@ -72,7 +76,7 @@ async function sendPasswordResetEmail({ to, resetUrl }) {
     </div>
   `;
 
-  if (!host || !user || !pass || !from) {
+  if (!host || !user || !pass || !from || hasPlaceholderConfig) {
     console.log(`[PASSWORD RESET] Email to ${to}: ${resetUrl}`);
     return;
   }

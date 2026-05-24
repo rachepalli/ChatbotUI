@@ -59,6 +59,8 @@ type ChatResponse = {
   model?: string;
   fallbackFrom?: string;
   fallbackError?: { message?: string };
+  ragSources?: Array<{ fileName?: string; chunkIndex?: number; framework?: string }>;
+  storedRagChunks?: number;
 };
 
 type SpeechRecognitionConstructor = new () => SpeechRecognition;
@@ -439,6 +441,37 @@ export default function ChatWindow({
     </span>
   );
 
+  const focusComposerAtEnd = () => {
+    window.setTimeout(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      const end = textarea.value.length;
+      textarea.setSelectionRange(end, end);
+    }, 0);
+  };
+
+  const handleComposerDelete = (textarea: HTMLTextAreaElement, key: "Backspace" | "Delete") => {
+    const value = textarea.value;
+    const start = textarea.selectionStart ?? value.length;
+    const end = textarea.selectionEnd ?? start;
+    const hasSelection = start !== end;
+
+    if (!value || (key === "Backspace" && start === 0 && !hasSelection) || (key === "Delete" && start === value.length && !hasSelection)) {
+      return;
+    }
+
+    const nextStart = hasSelection ? start : key === "Backspace" ? Math.max(0, start - 1) : start;
+    const nextEnd = hasSelection ? end : key === "Backspace" ? start : Math.min(value.length, start + 1);
+    const nextValue = `${value.slice(0, nextStart)}${value.slice(nextEnd)}`;
+
+    setInput(nextValue);
+    window.setTimeout(() => {
+      textarea.focus();
+      textarea.setSelectionRange(nextStart, nextStart);
+    }, 0);
+  };
+
   const renderComposer = (showQuickActions = false) => (
     <div className="mx-auto w-full max-w-3xl px-4">
       {attachmentError && (
@@ -541,6 +574,11 @@ export default function ChatWindow({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
+            if ((e.key === "Backspace" || e.key === "Delete") && !e.altKey && !e.ctrlKey && !e.metaKey) {
+              e.preventDefault();
+              handleComposerDelete(e.currentTarget, e.key);
+              return;
+            }
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               sendMessage();
@@ -588,7 +626,7 @@ export default function ChatWindow({
                 type="button"
                 onClick={() => {
                   setInput(action.prompt);
-                  window.setTimeout(() => textareaRef.current?.focus(), 0);
+                  focusComposerAtEnd();
                 }}
                 className="inline-flex min-h-9 items-center gap-2 rounded-full border border-[color:var(--border)] bg-[color:var(--surface)] px-3.5 text-sm font-medium text-[color:var(--foreground)] shadow-sm transition hover:border-[color:var(--accent)] hover:text-[color:var(--accent)]"
               >
@@ -613,7 +651,7 @@ export default function ChatWindow({
     </div>
   );
 
-  const sendMessage = async () => {
+  async function sendMessage() {
     const trimmed = input.trim();
     if ((!trimmed && attachments.length === 0) || sending) return;
 
@@ -679,7 +717,7 @@ export default function ChatWindow({
       setSending(false);
       sessionStorage.removeItem("rvk:optimisticChatId");
     }
-  };
+  }
 
   return (
     <section className="relative flex h-screen min-w-0 flex-1 flex-col overflow-hidden bg-[color:var(--background)]">

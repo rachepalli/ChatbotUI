@@ -1,9 +1,10 @@
 const http = require("http");
 const { MongoClient } = require("mongodb");
+const localStore = require("../local-chat-store");
 
 const port = Number(process.env.PORT || 4002);
 const serviceName = process.env.SERVICE_NAME || "thread-service";
-const mongoUri = process.env.MONGODB_URI;
+const mongoUri = process.env.MONGODB_DIRECT_URI || process.env.MONGODB_URI;
 const dbName = process.env.MONGODB_DB;
 
 let mongoClient;
@@ -22,16 +23,40 @@ async function readJson(req) {
 }
 
 async function getThreadsCollection() {
-  if (!mongoUri) throw new Error("MONGODB_URI is required");
+  if (!mongoUri) throw new Error("MONGODB_DIRECT_URI or MONGODB_URI is required");
 
   if (!mongoClient) {
     mongoClient = new MongoClient(mongoUri);
-    await mongoClient.connect();
-    threadsCollection = mongoClient.db(dbName).collection("threads");
-    await threadsCollection.createIndex({ chatId: 1, userId: 1 }, { unique: true });
+    try {
+      await mongoClient.connect();
+      threadsCollection = mongoClient.db(dbName).collection("threads");
+      await threadsCollection.createIndex({ chatId: 1, userId: 1 }, { unique: true });
+    } catch (error) {
+      await mongoClient.close().catch(() => {});
+      mongoClient = undefined;
+      threadsCollection = undefined;
+      throw error;
+    }
   }
 
+  if (!threadsCollection) throw new Error("MongoDB connection is not ready");
   return threadsCollection;
+}
+
+function isDatabaseUnavailable(error) {
+  const message = String(error?.message || error || "");
+  return (
+    error?.name === "MongoServerSelectionError" ||
+    error?.name === "MongoNetworkError" ||
+    message.includes("MONGODB_DIRECT_URI") ||
+    message.includes("MONGODB_URI") ||
+    message.includes("MongoDB connection is not ready") ||
+    message.includes("SSL routines") ||
+    message.includes("tlsv1 alert") ||
+    message.includes("Could not connect to any servers") ||
+    message.includes("querySrv") ||
+    message.includes("ECONNREFUSED")
+  );
 }
 
 function getUserId(req) {
@@ -54,9 +79,20 @@ async function listThreads(req, res) {
     return;
   }
 
-  const threads = await getThreadsCollection();
-  const items = await threads.find({ userId }).sort({ updatedAt: -1 }).toArray();
-  sendJson(res, 200, { threads: items.map(publicThread) });
+  try {
+    const threads = await getThreadsCollection();
+    const items = await threads.find({ userId }).sort({ updatedAt: -1 }).toArray();
+    sendJson(res, 200, { threads: items.map(publicThread) });
+  } catch (error) {
+    if (!isDatabaseUnavailable(error)) throw error;
+    sendJson(res, 200, {
+      threads: localStore.listThreads(userId).map(publicThread),
+      error: {
+        code: "DATABASE_UNAVAILABLE",
+        message: "Using local development chat history because MongoDB is unavailable.",
+      },
+    });
+  }
 }
 
 async function createThread(req, res) {
@@ -73,27 +109,45 @@ async function createThread(req, res) {
   }
 
   const now = new Date();
-  const threads = await getThreadsCollection();
-  await threads.updateOne(
-    { chatId, userId },
-    {
-      $setOnInsert: {
-        chatId,
-        userId,
-        pinned: false,
-        archived: false,
-        createdAt: now,
+  try {
+    const threads = await getThreadsCollection();
+    await threads.updateOne(
+      { chatId, userId },
+      {
+        $setOnInsert: {
+          chatId,
+          userId,
+          pinned: false,
+          archived: false,
+          createdAt: now,
+        },
+        $set: {
+          title: title || "New Chat",
+          updatedAt: now,
+        },
       },
-      $set: {
-        title: title || "New Chat",
-        updatedAt: now,
-      },
-    },
-    { upsert: true }
-  );
+      { upsert: true }
+    );
 
-  const thread = await threads.findOne({ chatId, userId });
-  sendJson(res, 201, { thread: publicThread(thread) });
+    const thread = await threads.findOne({ chatId, userId });
+    sendJson(res, 201, { thread: publicThread(thread) });
+  } catch (error) {
+    if (!isDatabaseUnavailable(error)) throw error;
+    const thread = localStore.upsertThread(userId, chatId, {
+      title: title || "New Chat",
+      pinned: false,
+      archived: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    sendJson(res, 201, {
+      thread: publicThread(thread),
+      error: {
+        code: "DATABASE_UNAVAILABLE",
+        message: "Saved this thread to local development history because MongoDB is unavailable.",
+      },
+    });
+  }
 }
 
 async function updateThread(req, res) {
@@ -114,14 +168,26 @@ async function updateThread(req, res) {
   if (pinned !== undefined) updates.pinned = Boolean(pinned);
   if (archived !== undefined) updates.archived = Boolean(archived);
 
-  const threads = await getThreadsCollection();
-  const result = await threads.findOneAndUpdate(
-    { chatId, userId },
-    { $set: updates },
-    { returnDocument: "after" }
-  );
+  try {
+    const threads = await getThreadsCollection();
+    const result = await threads.findOneAndUpdate(
+      { chatId, userId },
+      { $set: updates },
+      { returnDocument: "after" }
+    );
 
-  sendJson(res, 200, { thread: publicThread(result) });
+    sendJson(res, 200, { thread: publicThread(result) });
+  } catch (error) {
+    if (!isDatabaseUnavailable(error)) throw error;
+    const thread = localStore.upsertThread(userId, chatId, updates);
+    sendJson(res, 200, {
+      thread: publicThread(thread),
+      error: {
+        code: "DATABASE_UNAVAILABLE",
+        message: "Saved this update to local development history because MongoDB is unavailable.",
+      },
+    });
+  }
 }
 
 async function deleteThread(req, res) {
@@ -137,9 +203,22 @@ async function deleteThread(req, res) {
     return;
   }
 
-  const threads = await getThreadsCollection();
-  const result = await threads.deleteOne({ chatId, userId });
-  sendJson(res, 200, { success: true, deleted: result.deletedCount });
+  try {
+    const threads = await getThreadsCollection();
+    const result = await threads.deleteOne({ chatId, userId });
+    sendJson(res, 200, { success: true, deleted: result.deletedCount });
+  } catch (error) {
+    if (!isDatabaseUnavailable(error)) throw error;
+    const deleted = localStore.deleteThread(userId, chatId);
+    sendJson(res, 200, {
+      success: true,
+      deleted,
+      error: {
+        code: "DATABASE_UNAVAILABLE",
+        message: "Deleted from local development history because MongoDB is unavailable.",
+      },
+    });
+  }
 }
 
 async function handle(req, res) {
@@ -162,6 +241,16 @@ const server = http.createServer(async (req, res) => {
   try {
     await handle(req, res);
   } catch (error) {
+    if (isDatabaseUnavailable(error)) {
+      sendJson(res, 200, {
+        error: {
+          code: "DATABASE_UNAVAILABLE",
+          message: "Thread history is temporarily unavailable.",
+        },
+        service: serviceName,
+      });
+      return;
+    }
     sendJson(res, error instanceof SyntaxError ? 400 : 500, {
       error: error instanceof SyntaxError ? "Invalid JSON body" : "Internal server error",
       service: serviceName,

@@ -1,4 +1,5 @@
 agno>=2.0.0
+openai>=1.0.0
 pymongo>=4.13.0
 google-genai>=1.0.0
 groq>=0.13.0

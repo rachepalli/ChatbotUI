@@ -17,12 +17,27 @@ type SessionUserWithId = NonNullable<AuthOptions["callbacks"]> extends {
     : { id?: string }
   : { id?: string };
 
+function logAuthDatabaseIssue(context: string, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.warn(`${context}: ${message}`);
+}
+
+const configuredOauthHttpTimeoutMs = Number(process.env.OAUTH_HTTP_TIMEOUT_MS);
+const oauthHttpTimeoutMs =
+  Number.isFinite(configuredOauthHttpTimeoutMs) && configuredOauthHttpTimeoutMs > 0
+    ? configuredOauthHttpTimeoutMs
+    : 10000;
+
 export const authOptions: AuthOptions = {
+  debug: process.env.NEXTAUTH_DEBUG === "true",
   providers: [
     // ✅ GOOGLE
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID!,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      httpOptions: {
+        timeout: oauthHttpTimeoutMs,
+      },
     }),
 
     // ✅ GITHUB
@@ -72,6 +87,7 @@ export const authOptions: AuthOptions = {
   callbacks: {
     async jwt({ token, user, trigger, session }) {
       if (user) {
+        token.sub = user.id || token.sub;
         token.name = user.name;
         token.email = user.email;
       }
@@ -85,28 +101,62 @@ export const authOptions: AuthOptions = {
     },
 
     async signIn({ user, account }) {
-      await connectToDatabase();
+      const email = user.email?.trim().toLowerCase();
+      if (!email) return false;
+      user.email = email;
 
-      if (!user.email) return false;
+      try {
+        await connectToDatabase();
 
-      const dbUser = await User.findOne({ email: user.email });
+        const dbUser = await User.findOne({ email });
 
-      if (!dbUser) {
-        await User.create({
-          name: user.name || "User",
-          email: user.email,
-          image: user.image || "",
-          providers: [account?.provider || "credentials"],
-        });
+        if (!dbUser) {
+          const createdUser = await User.create({
+            name: user.name || "User",
+            email,
+            image: user.image || "",
+            providers: [account?.provider || "credentials"],
+          });
+          user.id = createdUser._id.toString();
+        } else if (account?.provider && !dbUser.providers?.includes(account.provider)) {
+          dbUser.providers = Array.from(new Set([...(dbUser.providers || []), account.provider]));
+          await dbUser.save();
+          user.id = dbUser._id.toString();
+        } else if (dbUser) {
+          user.id = dbUser._id.toString();
+        }
+      } catch (error) {
+        logAuthDatabaseIssue("NextAuth sign-in database sync failed", error);
+        return account?.provider !== "credentials";
       }
 
       return true;
+    },
+
+    async redirect({ url, baseUrl }) {
+      if (url.startsWith("/")) return `${baseUrl}${url}`;
+
+      try {
+        const target = new URL(url);
+        const base = new URL(baseUrl);
+        const isLocalhost =
+          ["localhost", "127.0.0.1"].includes(target.hostname) &&
+          ["localhost", "127.0.0.1"].includes(base.hostname) &&
+          target.port === base.port;
+
+        if (target.origin === base.origin || isLocalhost) return url;
+      } catch {
+        return baseUrl;
+      }
+
+      return baseUrl;
     },
 
     async session({ session, token }) {
       if (session.user) {
         if (typeof token.name === "string") session.user.name = token.name;
         if (typeof token.email === "string") session.user.email = token.email;
+        if (typeof token.sub === "string") (session.user as SessionUserWithId).id = token.sub;
       }
 
       if (!session.user?.email) return session;
@@ -122,10 +172,24 @@ export const authOptions: AuthOptions = {
           (session.user as SessionUserWithId).id = dbUser._id.toString();
         }
       } catch (error) {
-        console.error("NextAuth session database lookup failed", error);
+        logAuthDatabaseIssue("NextAuth session database lookup failed", error);
       }
 
       return session;
+    },
+  },
+
+  logger: {
+    error(code, metadata) {
+      console.error("NextAuth error", code, metadata);
+    },
+    warn(code) {
+      console.warn("NextAuth warning", code);
+    },
+    debug(code, metadata) {
+      if (process.env.NEXTAUTH_DEBUG === "true") {
+        console.debug("NextAuth debug", code, metadata);
+      }
     },
   },
 

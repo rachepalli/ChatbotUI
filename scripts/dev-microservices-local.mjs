@@ -17,7 +17,7 @@ const services = [
   { name: "chat-service", dir: "services/chat-service", command: [process.execPath, "server.js"], env: { PORT: "4003", SERVICE_NAME: "chat-service", LLM_SERVICE_URL: process.env.LLM_SERVICE_URL || "http://localhost:4004", RAG_SERVICE_URL: process.env.RAG_SERVICE_URL || "http://localhost:4005" }, port: 4003 },
   { name: "llm-service", dir: "services/llm-service", command: [process.execPath, "server.js"], env: { PORT: "4004", SERVICE_NAME: "llm-service" }, port: 4004 },
   ragPythonCommand
-    ? { name: "rag-service", dir: "services/rag-service", command: [...ragPythonCommand, "server.py"], env: { PORT: "4005", SERVICE_NAME: "rag-service", LLM_SERVICE_URL: process.env.LLM_SERVICE_URL || "http://localhost:4004" }, port: 4005 }
+    ? { name: "rag-service", dir: ".", command: [...ragPythonCommand, "services/rag-service/server.py"], env: { PORT: "4005", SERVICE_NAME: "rag-service", LLM_SERVICE_URL: process.env.LLM_SERVICE_URL || "http://localhost:4004" }, port: 4005 }
     : null,
 ];
 
@@ -82,6 +82,63 @@ function isPortAvailable(port) {
     });
     server.listen(port);
   });
+}
+
+function stopProcess(pid) {
+  return new Promise((resolve) => {
+    if (!pid) {
+      resolve(false);
+      return;
+    }
+
+    const child = isWindows
+      ? spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" })
+      : spawn("kill", ["-TERM", String(pid)], { stdio: "ignore" });
+
+    child.on("error", () => resolve(false));
+    child.on("exit", () => resolve(true));
+  });
+}
+
+function processIdsOnPort(port) {
+  return new Promise((resolve) => {
+    if (!isWindows) {
+      resolve([]);
+      return;
+    }
+
+    const child = spawn(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        `Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -and $_.OwningProcess -ne 0 } | Select-Object -ExpandProperty OwningProcess -Unique`,
+      ],
+      { stdio: ["ignore", "pipe", "ignore"] }
+    );
+
+    let output = "";
+    child.stdout.on("data", (data) => {
+      output += data.toString();
+    });
+    child.on("error", () => resolve([]));
+    child.on("exit", () => {
+      const ids = output
+        .split(/\s+/)
+        .map((value) => Number(value.trim()))
+        .filter((value) => Number.isInteger(value) && value > 0 && value !== process.pid);
+      resolve([...new Set(ids)]);
+    });
+  });
+}
+
+async function freePort(port) {
+  const ids = await processIdsOnPort(port);
+  if (!ids.length) return false;
+  console.log(`[launcher] stopping existing process(es) on port ${port}: ${ids.join(", ")}`);
+  await Promise.all(ids.map(stopProcess));
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  return true;
 }
 
 function commandWorks(command) {
@@ -195,6 +252,10 @@ process.on("SIGTERM", shutdown);
 const started = [];
 
 for (const proc of services.filter(Boolean)) {
+  if (withNext && proc.port) {
+    await freePort(proc.port);
+  }
+
   if (proc.port && !(await isPortAvailable(proc.port))) {
     skipped.push(proc);
     console.log(`[${proc.name}] port ${proc.port} is already in use; reusing existing process.`);
@@ -222,7 +283,6 @@ if (skipped.length) {
 if (!children.length && skipped.length) {
   console.log("Everything needed is already running.");
 }
-
 // Keep the launcher alive while child services run, even if a child has quiet stdio.
 const keepAlive = setInterval(() => {
   const running = children.some((child) => !child.killed && child.exitCode === null && child.signalCode === null);

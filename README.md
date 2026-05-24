@@ -29,6 +29,8 @@ Create a `.env.local` file in the project root.
 
 ```env
 MONGODB_URI=your_mongodb_connection_string
+MONGODB_DIRECT_URI=optional_non_srv_mongodb_seed_list_uri
+MONGODB_DB=chatbot
 
 NEXTAUTH_SECRET=your_random_secret
 NEXTAUTH_URL=http://localhost:3000
@@ -64,13 +66,40 @@ API_GATEWAY_URL=http://localhost:8080
 AUTH_SERVICE_URL=http://localhost:4001
 LLM_SERVICE_URL=http://localhost:4004
 RAG_SERVICE_URL=http://localhost:4005
-RAG_VECTOR_DB=mongodb
+RAG_VECTOR_DB=local-mongodb
 RAG_TABLE_NAME=agno_rag_documents
+RAG_MONGO_SEARCH_INDEX_NAME=vector_index_1
 RAG_DB_URL=postgresql+psycopg://rag:rag@localhost:5433/rag
 OLLAMA_BASE_URL=http://localhost:11434
 ```
 
-RAG uses the Agno Knowledge framework. Local microservice runs use the Agno MongoDB vector DB by default through `MONGODB_URI`. Docker Compose sets `RAG_VECTOR_DB=pgvector` and starts a PgVector database for the RAG service.
+RAG uses the Agno Knowledge framework. Local microservice runs use a local MongoDB-backed vector store by default through `MONGODB_URI`, because normal local MongoDB does not support Atlas `$vectorSearch`. Use `RAG_VECTOR_DB=mongodb-atlas` only with MongoDB Atlas/Atlas CLI local deployments. Docker Compose sets `RAG_VECTOR_DB=pgvector` and starts a PgVector database for the RAG service.
+
+If your machine or DNS provider blocks Node's SRV lookup for `mongodb+srv://` Atlas URLs, set `MONGODB_DIRECT_URI` to the standard seed-list URI from Atlas. The app and microservices prefer `MONGODB_DIRECT_URI` when it is present, while keeping `MONGODB_URI` available for environments where SRV works.
+
+### MongoDB Atlas RAG
+
+For Vercel or another hosted deployment using MongoDB Atlas Vector Search, set:
+
+```env
+MONGODB_URI=your_mongodb_atlas_connection_string
+MONGODB_DIRECT_URI=optional_non_srv_mongodb_atlas_seed_list_uri
+MONGODB_DB=chatbot
+RAG_VECTOR_DB=mongodb-atlas
+RAG_TABLE_NAME=agno_rag_documents
+RAG_MONGO_SEARCH_INDEX_NAME=vector_index_1
+RAG_EMBEDDING_DIMENSIONS=768
+```
+
+Create an Atlas Vector Search index on the `agno_rag_documents` collection with:
+
+- Index name: `vector_index_1`
+- Vector field path: `embedding`
+- Dimensions: `768`
+- Similarity: `cosine`
+- Filter fields: `meta_data.userId`, `meta_data.threadId`, `meta_data.attachmentId`
+
+Atlas is required for this mode. Plain local MongoDB does not support `$vectorSearch`.
 
 For normal Vercel deployment, do not set `API_GATEWAY_URL` or `AUTH_SERVICE_URL` unless those services are deployed somewhere public. The app can use the built-in Next.js API route fallback for signup.
 
