@@ -3,11 +3,11 @@ const http = require("http");
 const { MongoClient } = require("mongodb");
 const bcrypt = require("bcryptjs");
 const nodemailer = require("nodemailer");
+const { mongoClientOptions, mongoDbName, requiredMongoUri } = require("../mongo-client");
 
 const port = Number(process.env.PORT || 4001);
 const serviceName = process.env.SERVICE_NAME || "auth-service";
-const mongoUri = process.env.MONGODB_DIRECT_URI || process.env.MONGODB_URI;
-const dbName = process.env.MONGODB_DB;
+const dbName = mongoDbName();
 const resetTokenTtlMs = 15 * 60 * 1000;
 
 let mongoClient;
@@ -37,12 +37,10 @@ async function readJson(req) {
 }
 
 async function getUsersCollection() {
-  if (!mongoUri) {
-    throw new Error("MONGODB_DIRECT_URI or MONGODB_URI is required");
-  }
+  const uri = requiredMongoUri();
 
   if (!mongoClient) {
-    mongoClient = new MongoClient(mongoUri);
+    mongoClient = new MongoClient(uri, mongoClientOptions());
     await mongoClient.connect();
     usersCollection = mongoClient.db(dbName).collection("users");
     await usersCollection.createIndex({ email: 1 }, { unique: true });
@@ -56,15 +54,21 @@ function normalizeEmail(email) {
 }
 
 async function sendPasswordResetEmail({ to, resetUrl }) {
-  const host = process.env.SMTP_HOST;
+  const host = String(process.env.SMTP_HOST || "").trim();
   const mailPort = process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : 587;
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
-  const from = process.env.SMTP_FROM || process.env.SMTP_USER;
-  const hasPlaceholderConfig =
-    user === "your-email@gmail.com" ||
-    from === "your-email@gmail.com" ||
-    pass === "your-16-char-app-password";
+  const user = String(process.env.SMTP_USER || "").trim();
+  const pass = String(process.env.SMTP_PASS || "").trim();
+  const fromCandidate = String(process.env.SMTP_FROM || "").trim();
+  const placeholderValues = new Set([
+    "your-email@gmail.com",
+    "your_from_email",
+    "your-16-char-app-password",
+    "your_smtp_password",
+  ]);
+  const from =
+    !fromCandidate || placeholderValues.has(fromCandidate) ? user : fromCandidate;
+  const isDevelopment = process.env.NODE_ENV === "development";
+  const isConfigured = Boolean(host && user && pass && from && !placeholderValues.has(pass));
 
   const html = `
     <div style="font-family: Arial, sans-serif; line-height: 1.5;">
@@ -76,9 +80,12 @@ async function sendPasswordResetEmail({ to, resetUrl }) {
     </div>
   `;
 
-  if (!host || !user || !pass || !from || hasPlaceholderConfig) {
+  if (!isConfigured) {
+    console.warn(
+      "[PASSWORD RESET] SMTP is not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS, and SMTP_FROM."
+    );
     console.log(`[PASSWORD RESET] Email to ${to}: ${resetUrl}`);
-    return;
+    return isDevelopment ? { sent: false, devResetUrl: resetUrl } : { sent: false };
   }
 
   const transporter = nodemailer.createTransport({
@@ -86,14 +93,24 @@ async function sendPasswordResetEmail({ to, resetUrl }) {
     port: mailPort,
     secure: mailPort === 465,
     auth: { user, pass },
+    ...(mailPort === 587 ? { requireTLS: true } : {}),
   });
 
-  await transporter.sendMail({
-    from,
-    to,
-    subject: "Reset your password",
-    html,
-  });
+  try {
+    await transporter.sendMail({
+      from,
+      to,
+      subject: "Reset your password",
+      html,
+    });
+    return { sent: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to send reset email";
+    console.error("[PASSWORD RESET] SMTP send failed:", message);
+    return isDevelopment
+      ? { sent: false, devResetUrl: resetUrl, error: message }
+      : { sent: false, error: message };
+  }
 }
 
 async function signup(req, res) {
@@ -142,7 +159,7 @@ async function forgotPassword(req, res) {
   const users = await getUsersCollection();
   const user = await users.findOne({ email: normalizedEmail });
 
-  if (user && user.password) {
+  if (user) {
     const rawToken = crypto.randomBytes(32).toString("hex");
     const hashedToken = crypto.createHash("sha256").update(rawToken).digest("hex");
     const resetPasswordExpires = new Date(Date.now() + resetTokenTtlMs);
@@ -163,7 +180,17 @@ async function forgotPassword(req, res) {
       process.env.NEXTAUTH_URL ||
       "http://localhost:3000";
     const resetUrl = `${baseUrl}/reset-password?token=${rawToken}`;
-    await sendPasswordResetEmail({ to: user.email, resetUrl });
+    const emailResult = await sendPasswordResetEmail({ to: user.email, resetUrl });
+
+    sendJson(res, 200, {
+      success: true,
+      message: "If an account exists with that email, a password reset link has been sent.",
+      ...(emailResult.devResetUrl ? { devResetUrl: emailResult.devResetUrl } : {}),
+      ...(process.env.NODE_ENV === "development" && emailResult.error
+        ? { emailError: emailResult.error }
+        : {}),
+    });
+    return;
   }
 
   sendJson(res, 200, {

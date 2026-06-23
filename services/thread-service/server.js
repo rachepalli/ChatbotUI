@@ -1,11 +1,11 @@
 const http = require("http");
 const { MongoClient } = require("mongodb");
 const localStore = require("../local-chat-store");
+const { mongoClientOptions, mongoDbName, requiredMongoUri } = require("../mongo-client");
 
 const port = Number(process.env.PORT || 4002);
 const serviceName = process.env.SERVICE_NAME || "thread-service";
-const mongoUri = process.env.MONGODB_DIRECT_URI || process.env.MONGODB_URI;
-const dbName = process.env.MONGODB_DB;
+const dbName = mongoDbName();
 
 let mongoClient;
 let threadsCollection;
@@ -23,10 +23,10 @@ async function readJson(req) {
 }
 
 async function getThreadsCollection() {
-  if (!mongoUri) throw new Error("MONGODB_DIRECT_URI or MONGODB_URI is required");
+  const uri = requiredMongoUri();
 
   if (!mongoClient) {
-    mongoClient = new MongoClient(mongoUri);
+    mongoClient = new MongoClient(uri, mongoClientOptions());
     try {
       await mongoClient.connect();
       threadsCollection = mongoClient.db(dbName).collection("threads");

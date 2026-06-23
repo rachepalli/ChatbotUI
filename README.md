@@ -1,6 +1,18 @@
-# RVK Chatbot UI
+# AIVA Chatbot UI
 
-A Next.js chatbot application with authentication, chat history, RAG search, localization, and optional local microservices.
+AIVA is a Next.js multi-model AI chat workspace with authentication, saved threads, document and image uploads, RAG search, voice input, localization, and optional local microservices.
+
+## Features
+
+- Multi-model chat with Gemini and LLaMA-style providers
+- Persistent chat history with pin, archive, rename, and search
+- Document and image attachments with RAG-backed answers
+- Voice-to-text in the chat composer (browser speech recognition with Whisper fallback)
+- Localized UI for English, Hindi, Kannada, Telugu, Tamil, and Malayalam
+- Light and dark themes
+- Email/password auth plus Google and GitHub OAuth
+- Password reset flow with SMTP email support
+- Optional microservices for auth, threads, chat, LLM routing, and RAG
 
 ## Tech Stack
 
@@ -49,14 +61,23 @@ GEMINI_EMBEDDING_MODEL=text-embedding-004
 OPENAI_API_KEY=your_openai_api_key
 TAVILY_API_KEY=your_tavily_api_key
 
-NEXT_PUBLIC_TOLGEE_API_KEY=your_tolgee_api_key
-NEXT_PUBLIC_TOLGEE_API_URL=your_tolgee_api_url
-
 SMTP_HOST=your_smtp_host
 SMTP_PORT=587
 SMTP_USER=your_smtp_user
 SMTP_PASS=your_smtp_password
 SMTP_FROM=your_from_email
+```
+
+`OPENAI_API_KEY` or `GROQ_API_KEY` is required for server-side voice transcription fallback. `SMTP_*` is optional in local development; when SMTP is not configured, the forgot-password flow can return a development reset link instead of sending email.
+
+Optional RAG tuning variables:
+
+```env
+RAG_CHAT_MODEL=gemini-2.5-flash
+RAG_FALLBACK_CHAT_MODELS=gemini-2.5-flash-lite,gemini-2.5-flash
+RAG_TOP_K=6
+RAG_SUMMARY_TOP_K=8
+RAG_EMBEDDING_DIMENSIONS=768
 ```
 
 Optional microservice variables:
@@ -102,6 +123,27 @@ Create an Atlas Vector Search index on the `agno_rag_documents` collection with:
 Atlas is required for this mode. Plain local MongoDB does not support `$vectorSearch`.
 
 For normal Vercel deployment, do not set `API_GATEWAY_URL` or `AUTH_SERVICE_URL` unless those services are deployed somewhere public. The app can use the built-in Next.js API route fallback for signup.
+
+## Localization
+
+The UI ships with built-in translations for English, Hindi, Kannada, Telugu, Tamil, and Malayalam. Google Translate is used as a page-level fallback through `AppGoogleTranslateProvider`, so users can switch languages from the header without extra third-party translation service keys.
+
+## Voice Input
+
+Voice input is available in the chat composer when signed in:
+
+- Chrome and Edge use the browser Web Speech API for live transcription
+- Other browsers record audio and send it to `/api/voice/translate`
+- The voice API tries Groq Whisper first, then OpenAI Whisper if Groq is unavailable or quota-limited
+
+Microphone access requires HTTPS or `http://localhost`.
+
+## Upload Limits
+
+The chat UI enforces daily client-side limits of:
+
+- 5 images per day
+- 3 documents per day
 
 ## Install
 
@@ -212,9 +254,6 @@ GEMINI_EMBEDDING_MODEL=text-embedding-004
 OPENAI_API_KEY=your_openai_api_key
 TAVILY_API_KEY=your_tavily_api_key
 
-NEXT_PUBLIC_TOLGEE_API_KEY=your_tolgee_api_key
-NEXT_PUBLIC_TOLGEE_API_URL=your_tolgee_api_url
-
 SMTP_HOST=your_smtp_host
 SMTP_PORT=587
 SMTP_USER=your_smtp_user
@@ -260,3 +299,5 @@ public/               Static assets
 - Signup requires a working `MONGODB_URI`.
 - Login requires `NEXTAUTH_SECRET` and `NEXTAUTH_URL`.
 - OAuth login requires valid Google/GitHub callback URLs.
+- Voice transcription requires sign-in plus `GROQ_API_KEY` or `OPENAI_API_KEY`.
+- Password reset email requires valid `SMTP_*` values in production.

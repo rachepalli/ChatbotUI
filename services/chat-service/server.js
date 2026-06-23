@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const { MongoClient } = require("mongodb");
 const zlib = require("zlib");
 const localStore = require("../local-chat-store");
+const { mongoClientOptions, mongoDbName, requiredMongoUri } = require("../mongo-client");
 
 let mammoth = null;
 try {
@@ -13,12 +14,14 @@ try {
 
 const port = Number(process.env.PORT || 4003);
 const serviceName = process.env.SERVICE_NAME || "chat-service";
-const mongoUri = process.env.MONGODB_DIRECT_URI || process.env.MONGODB_URI;
-const dbName = process.env.MONGODB_DB;
+const dbName = mongoDbName();
 const llmServiceUrl = (process.env.LLM_SERVICE_URL || "http://localhost:4004").replace(/\/$/, "");
 const ragServiceUrl = (process.env.RAG_SERVICE_URL || "http://localhost:4005").replace(/\/$/, "");
 const tavilySearchUrl = "https://api.tavily.com/search";
 const ragSummaryLimit = Number(process.env.RAG_SUMMARY_MAX_CHUNKS || 24);
+const imageUploadDailyLimit = Number(process.env.CHAT_IMAGE_UPLOAD_DAILY_LIMIT || 5);
+const documentUploadDailyLimit = Number(process.env.CHAT_DOCUMENT_UPLOAD_DAILY_LIMIT || 3);
+const uploadMaxBytes = Number(process.env.CHAT_UPLOAD_MAX_BYTES || 50 * 1024 * 1024);
 
 let mongoClient;
 let db;
@@ -36,10 +39,10 @@ async function readJson(req) {
 }
 
 async function getDb() {
-  if (!mongoUri) throw new Error("MONGODB_DIRECT_URI or MONGODB_URI is required");
+  const uri = requiredMongoUri();
 
   if (!mongoClient) {
-    mongoClient = new MongoClient(mongoUri);
+    mongoClient = new MongoClient(uri, mongoClientOptions());
     try {
       await mongoClient.connect();
       db = mongoClient.db(dbName);
@@ -143,6 +146,44 @@ function buildContextualPrompt(message, conversationContext) {
     .join("\n");
 }
 
+function isDocumentAttachment(attachment) {
+  if (attachment.kind === "image") return false;
+  if (attachment.kind === "document") return true;
+
+  const type = String(attachment.type || "").toLowerCase();
+  const name = String(attachment.name || "").toLowerCase();
+  return (
+    type === "application/pdf" ||
+    type.includes("wordprocessingml") ||
+    name.endsWith(".pdf") ||
+    name.endsWith(".docx")
+  );
+}
+
+function hasImageAttachments(attachments) {
+  return attachments.some((attachment) => attachment.kind === "image" && attachment.dataUrl);
+}
+
+function buildImageAwarePrompt(message, conversationContext, attachments) {
+  const base = buildContextualPrompt(message, conversationContext);
+  if (!hasImageAttachments(attachments)) return base;
+
+  const imageNames = attachments
+    .filter((attachment) => attachment.kind === "image")
+    .map((attachment) => attachment.name)
+    .join(", ");
+
+  return [
+    base,
+    "",
+    "One or more images are attached to this message.",
+    imageNames ? `Image file(s): ${imageNames}.` : null,
+    "Analyze the attached image(s) directly. Describe visible content, readable text, objects, context, and answer the user's question based on what you see in the image(s).",
+  ]
+    .filter((item) => item !== null && item !== undefined && item !== "")
+    .join("\n");
+}
+
 function buildContextualQuery(message, history) {
   const recentUserContext = history
     .filter((item) => item?.role === "user" && item?.content)
@@ -217,6 +258,128 @@ function publicAttachment(attachment) {
   delete copy.dataUrl;
   delete copy.text;
   return copy;
+}
+
+function startOfUtcDay(date = new Date()) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+function validateAttachmentSizes(attachments) {
+  if (!Array.isArray(attachments)) return;
+
+  const oversized = attachments.find((attachment) => {
+    const size = Number(attachment?.size || 0);
+    return Number.isFinite(size) && size > uploadMaxBytes;
+  });
+
+  if (oversized) {
+    const error = new Error(`${String(oversized?.name || "Attachment")} is larger than the 50 MB attachment limit.`);
+    error.status = 400;
+    throw error;
+  }
+}
+
+function isImageUploadAttachment(attachment) {
+  const type = String(attachment?.type || "").toLowerCase();
+  const kind = String(attachment?.kind || "").toLowerCase();
+
+  return kind === "image" || type.startsWith("image/");
+}
+
+function isDocumentUploadAttachment(attachment) {
+  if (isImageUploadAttachment(attachment)) return false;
+
+  const type = String(attachment?.type || "").toLowerCase();
+  const name = String(attachment?.name || "").toLowerCase();
+  const kind = String(attachment?.kind || "").toLowerCase();
+
+  return (
+    kind === "document" ||
+    type === "application/pdf" ||
+    name.endsWith(".pdf") ||
+    type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    name.endsWith(".docx") ||
+    type === "application/msword" ||
+    name.endsWith(".doc")
+  );
+}
+
+function countUploadAttachments(items, kind) {
+  if (!Array.isArray(items)) return 0;
+  const matcher = kind === "image" ? isImageUploadAttachment : isDocumentUploadAttachment;
+  return items.filter(matcher).length;
+}
+
+async function countDailyImageUploads({ messages, userId, since }) {
+  if (!messages) {
+    return localStore
+      .listUserMessages(userId)
+      .filter((message) => message.role === "user" && new Date(message.createdAt) >= since)
+      .reduce((total, message) => total + countUploadAttachments(message.attachments, "image"), 0);
+  }
+
+  const rows = await messages
+    .find(
+      {
+        userId,
+        role: "user",
+        createdAt: { $gte: since },
+        attachments: { $exists: true, $ne: [] },
+      },
+      { projection: { attachments: 1 } }
+    )
+    .toArray();
+
+  return rows.reduce((total, message) => total + countUploadAttachments(message.attachments, "image"), 0);
+}
+
+async function countDailyDocumentUploads({ messages, userId, since }) {
+  if (!messages) {
+    return localStore
+      .listUserMessages(userId)
+      .filter((message) => message.role === "user" && new Date(message.createdAt) >= since)
+      .reduce((total, message) => total + countUploadAttachments(message.attachments, "document"), 0);
+  }
+
+  const rows = await messages
+    .find(
+      {
+        userId,
+        role: "user",
+        createdAt: { $gte: since },
+        attachments: { $exists: true, $ne: [] },
+      },
+      { projection: { attachments: 1 } }
+    )
+    .toArray();
+
+  return rows.reduce((total, message) => total + countUploadAttachments(message.attachments, "document"), 0);
+}
+
+async function enforceUploadLimits({ attachments, messages, userId, now }) {
+  validateAttachmentSizes(attachments);
+
+  const since = startOfUtcDay(now);
+  const imageCount = countUploadAttachments(attachments, "image");
+  const documentCount = countUploadAttachments(attachments, "document");
+
+  if (imageCount) {
+    const currentImageCount = await countDailyImageUploads({ messages, userId, since });
+    if (currentImageCount + imageCount > imageUploadDailyLimit) {
+      const error = new Error(`You can upload up to ${imageUploadDailyLimit} images per day.`);
+      error.status = 429;
+      throw error;
+    }
+  }
+
+  if (documentCount) {
+    const currentDocumentCount = await countDailyDocumentUploads({ messages, userId, since });
+    if (currentDocumentCount + documentCount > documentUploadDailyLimit) {
+      const error = new Error(`You can upload up to ${documentUploadDailyLimit} documents per day.`);
+      error.status = 429;
+      throw error;
+    }
+  }
 }
 
 function decodeEntities(value) {
@@ -411,46 +574,6 @@ async function extractDocxTextWithParser(buffer) {
   return normalizeExtractedText(result?.value || "");
 }
 
-async function extractImageTextWithVision(attachment, payload) {
-  if (!payload?.mimeType?.startsWith("image/")) return "";
-
-  try {
-    const response = await withTimeout(
-      fetch(`${llmServiceUrl}/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: process.env.VISION_MODEL || "gpt-4.1-mini",
-          timeoutMs: 20000,
-          message: [
-            "Analyze this image for RAG ingestion.",
-            "Extract every readable word, number, label, heading, table value, or handwritten note you can see.",
-            "Then add a concise factual description of the image contents.",
-            "Do not guess hidden information. If no readable text is present, describe only visible objects and context.",
-          ].join(" "),
-          attachments: [
-            {
-              name: attachment.name,
-              mimeType: payload.mimeType,
-              data: payload.buffer.toString("base64"),
-            },
-          ],
-        }),
-      }),
-      24000
-    );
-
-    const data = await response.json().catch(() => null);
-    if (!response.ok || data?.error) return "";
-
-    return normalizeExtractedText(
-      [`Image analysis for ${attachment.name}:`, data?.message || ""].filter(Boolean).join("\n")
-    );
-  } catch {
-    return "";
-  }
-}
-
 function decodePdfLiteralString(value) {
   return value
     .replace(/\\([nrtbf()\\])/g, (_, code) => {
@@ -547,7 +670,7 @@ async function extractAttachmentText(attachment) {
 
   try {
     if (payload.mimeType.startsWith("image/") || type.startsWith("image/")) {
-      return extractImageTextWithVision(attachment, payload);
+      return "";
     }
     if (type === "application/pdf" || name.endsWith(".pdf")) {
       return extractPdfText(payload.buffer);
@@ -753,8 +876,13 @@ function shouldUseWebSearch(message) {
 }
 
 function shouldUseRag(message, attachments) {
-  if (attachments.some((attachment) => attachment.text)) return true;
-  if (attachments.some((attachment) => attachment.kind === "document")) return true;
+  const documentAttachments = attachments.filter(isDocumentAttachment);
+  if (documentAttachments.some((attachment) => attachment.text)) return true;
+  if (documentAttachments.length) return true;
+
+  const imageOnly =
+    attachments.length > 0 && attachments.every((attachment) => attachment.kind === "image");
+  if (imageOnly) return false;
 
   return /\b(document|documents|file|files|attachment|attached|pdf|docx|chunk|chunks|uploaded|based on|according to)\b/i.test(
     String(message || "")
@@ -800,10 +928,10 @@ function formatRagContext(chunks, options = {}) {
   return [
     "Use the uploaded document source material below when it is relevant.",
     options.summaryMode
-      ? `You are an intelligent document analysis assistant. The user is asking for a full-document summary or analysis. ${summaryLengthInstruction} First infer the complete document structure: title, chapters, headings, subheadings, sections, tables, important concepts, and all major topics. Cover every major topic, section, workflow, list, definition, and important fact present in this source material, but do not over-explain small documents. Generate a structured section-by-section summary, not a raw chunk dump. Use Markdown bold only for topic headings and section headings. Do not bold normal body sentences or bullet text. Keep body text plain, concise, and easy to scan. Prefer paraphrasing over copying. Use only facts explicitly present in this source material. Do not mention chunks, retrieval, RAG, source numbers, missing-information sections, limitation sections, recommendation sections, critique sections, or filler endings like no additional information is available unless the user asks for them.`
+      ? `You are an intelligent document analysis assistant. The user is asking for a full-document summary or analysis. ${summaryLengthInstruction} First infer the complete document structure: title, chapters, headings, subheadings, sections, tables, important concepts, and all major topics. Cover every major topic, section, workflow, list, definition, and important fact present in this source material, but do not over-explain small documents. Generate a structured section-by-section summary, not a raw chunk dump. Use Markdown bold for topic headings, section headings, subheadings, and short bullet lead-ins. Do not bold full body sentences. Keep body text plain, concise, and easy to scan. Prefer paraphrasing over copying. Use only facts explicitly present in this source material. Do not mention chunks, retrieval, RAG, source numbers, missing-information sections, limitation sections, recommendation sections, critique sections, or filler endings like no additional information is available unless the user asks for them.`
       : options.detailMode
-        ? "You are an intelligent document analysis assistant. The user is asking for a detailed explanation. Explain the current document/topic deeply using the uploaded document source material. If the request refers broadly to it, this document, everything, or the previous document, explain all major sections in depth. If the request names a specific heading, topic, concept, or chapter, explain only that topic deeply. Cover definitions, concepts, workflows, features, examples, benefits, limitations, tables, and important facts when they are present in the document. Rewrite content in simpler and clearer language. Use Markdown bold only for topic headings and section headings. Do not bold normal body sentences or bullet text. Never dump retrieved chunks, repeat OCR text, or copy paragraphs directly. Do not mention chunks, retrieval, RAG, or source numbers."
-        : "Write a polished ChatGPT-style response grounded in this source material. If the user asks about a specific heading, topic, concept, or chapter, explain only that topic deeply and avoid summarizing the entire document. Synthesize related source material instead of copying raw paragraphs or dumping retrieved chunks. Match the user's requested depth. If the source material does not contain the answer, say what is missing.",
+        ? "You are an intelligent document analysis assistant. The user is asking for a detailed explanation. Explain the current document/topic deeply using the uploaded document source material. If the request refers broadly to it, this document, everything, or the previous document, explain all major sections in depth. If the request names a specific heading, topic, concept, or chapter, explain only that topic deeply. Cover definitions, concepts, workflows, features, examples, benefits, limitations, tables, and important facts when they are present in the document. Rewrite content in simpler and clearer language. Use Markdown bold for topic headings, section headings, subheadings, and short bullet lead-ins. Do not bold full body sentences. Never dump retrieved chunks, repeat OCR text, or copy paragraphs directly. Do not mention chunks, retrieval, RAG, or source numbers."
+        : "Write a polished ChatGPT-style response grounded in this source material. Use Markdown bold for headings, subheadings, and short bullet lead-ins when the answer has multiple points. If the user asks about a specific heading, topic, concept, or chapter, explain only that topic deeply and avoid summarizing the entire document. Synthesize related source material instead of copying raw paragraphs or dumping retrieved chunks. Match the user's requested depth. If the source material does not contain the answer, say what is missing.",
     "Never say you do not have access to the document when source material is provided.",
     "",
     "Uploaded document source material:",
@@ -1002,14 +1130,16 @@ async function searchWeb(query) {
 }
 
 async function generateReply(message, model, attachments) {
+  const imageAttachments = Array.isArray(attachments) ? attachments : [];
+  const timeoutMs = imageAttachments.length ? 45000 : 10000;
   const response = await fetch(`${llmServiceUrl}/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       message,
       model: model || "gemini-2.5-flash",
-      timeoutMs: 10000,
-      attachments,
+      timeoutMs,
+      attachments: imageAttachments,
     }),
   });
 
@@ -1047,8 +1177,6 @@ async function sendMessage(req, res) {
     return;
   }
 
-  const normalizedAttachments = await normalizeAttachments(attachments);
-
   const now = new Date();
   let database = null;
   let threads = null;
@@ -1072,9 +1200,11 @@ async function sendMessage(req, res) {
     previousMessages = localStore.listMessages(userId, chatId).slice(-20);
   }
 
+  await enforceUploadLimits({ attachments, messages, userId, now });
+  const normalizedAttachments = await normalizeAttachments(attachments);
+
   const conversationHistory = previousMessages.reverse();
   const conversationContext = formatConversationHistory(conversationHistory);
-  const contextualPrompt = buildContextualPrompt(message, conversationContext);
   const contextualQuery = buildContextualQuery(message, conversationHistory);
 
   if (threads) {
@@ -1210,9 +1340,9 @@ async function sendMessage(req, res) {
       const attachmentStatus = formatAttachmentStatus(normalizedAttachments, storedChunks);
       const contextBlocks = [ragContext, attachmentStatus].filter(Boolean).join("\n\n");
       const taskInstruction = summaryMode
-        ? "Task: Summarize the complete attached/retrieved document as a polished ChatGPT-style answer. Infer the document hierarchy and cover all major headings/topics specified in the document section-by-section. Keep the length proportional to the document size. Do not dump chunks or copy OCR text. Do not ask the user for a more specific question. Do not mention chunks, retrieval, RAG, source numbers, missing-information sections, limitation sections, recommendation sections, critique sections, or filler endings like no additional information is available unless the user asks for them."
+        ? "Task: Summarize the complete attached/retrieved document as a polished ChatGPT-style answer. Infer the document hierarchy and cover all major headings/topics specified in the document section-by-section. Bold headings, subheadings, and short bullet lead-ins. Keep the length proportional to the document size. Do not dump chunks or copy OCR text. Do not ask the user for a more specific question. Do not mention chunks, retrieval, RAG, source numbers, missing-information sections, limitation sections, recommendation sections, critique sections, or filler endings like no additional information is available unless the user asks for them."
         : detailMode
-          ? "Task: Give a detailed explanation of the current uploaded document/topic. If the user refers broadly to it or the previous document, explain all major sections in depth. If the user names a specific topic, explain only that topic. Expand the concepts, definitions, workflows, features, examples, and important facts found in the source material. Do not dump chunks or copy OCR text. Do not ask the user to repeat the document or topic when the previous context is clear."
+          ? "Task: Give a detailed explanation of the current uploaded document/topic. If the user refers broadly to it or the previous document, explain all major sections in depth. If the user names a specific topic, explain only that topic. Bold headings, subheadings, and short bullet lead-ins. Expand the concepts, definitions, workflows, features, examples, and important facts found in the source material. Do not dump chunks or copy OCR text. Do not ask the user to repeat the document or topic when the previous context is clear."
           : "";
       const llmMessage = contextBlocks
         ? `${contextBlocks}\n\n${taskInstruction ? `${taskInstruction}\n\n` : ""}${message}`
@@ -1227,7 +1357,8 @@ async function sendMessage(req, res) {
     search = useWebSearch ? await searchWeb(webSearchQuery) : { sources: [], error: null };
     const searchContext = formatSearchContext(search);
     const contextBlocks = [searchContext].filter(Boolean).join("\n\n");
-    const llmMessage = contextBlocks ? `${contextBlocks}\n\n${contextualPrompt}` : contextualPrompt;
+    const imageAwarePrompt = buildImageAwarePrompt(message, conversationContext, normalizedAttachments);
+    const llmMessage = contextBlocks ? `${contextBlocks}\n\n${imageAwarePrompt}` : imageAwarePrompt;
     llm = await generateReply(llmMessage, model, imagePartsForLlm(normalizedAttachments));
     const reply = appendSources(llm.reply, search.sources);
     const searchErrorNote =
@@ -1391,8 +1522,16 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
-    sendJson(res, error instanceof SyntaxError ? 400 : 500, {
-      error: error instanceof SyntaxError ? "Invalid JSON body" : "Internal server error",
+    const status = error instanceof SyntaxError ? 400 : Number(error?.status || 500);
+    sendJson(res, status, {
+      error:
+        error instanceof SyntaxError
+          ? "Invalid JSON body"
+          : status === 429
+            ? "Upload limit reached"
+            : status === 400
+              ? "Upload rejected"
+              : "Internal server error",
       message: error instanceof Error ? error.message : String(error),
       service: serviceName,
     });

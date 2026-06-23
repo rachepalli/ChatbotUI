@@ -29,6 +29,11 @@ function mongoUri() {
   return process.env.MONGODB_DIRECT_URI || process.env.MONGODB_URI;
 }
 
+function numberEnv(name: string, fallback: number) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
 export async function connectToDatabase() {
   if (cached.conn) return cached.conn;
 
@@ -43,11 +48,16 @@ export async function connectToDatabase() {
   }
 
   if (!cached.promise) {
-    const serverSelectionTimeoutMS = Number(process.env.MONGODB_SERVER_SELECTION_TIMEOUT_MS || 3000);
+    const serverSelectionTimeoutMS = numberEnv("MONGODB_SERVER_SELECTION_TIMEOUT_MS", 10000);
+    const connectTimeoutMS = numberEnv("MONGODB_CONNECT_TIMEOUT_MS", serverSelectionTimeoutMS);
+    const socketTimeoutMS = numberEnv("MONGODB_SOCKET_TIMEOUT_MS", 45000);
+    const family = Number(process.env.MONGODB_FAMILY || 4);
     cached.promise = mongoose.connect(uri, {
       dbName: process.env.MONGODB_DB,
       serverSelectionTimeoutMS,
-      connectTimeoutMS: serverSelectionTimeoutMS,
+      connectTimeoutMS,
+      socketTimeoutMS,
+      family: family === 6 ? 6 : 4,
     });
   }
 

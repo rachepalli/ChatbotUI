@@ -22,6 +22,7 @@ async function tryProxyForgotPassword(baseUrl: string | undefined, path: string,
       path,
       method: "POST",
       body,
+      timeoutMs: 15000,
     });
   } catch (error) {
     console.error(`Forgot password proxy failed for ${path}`, error);
@@ -40,7 +41,7 @@ async function forgotPasswordLocally(body: unknown) {
   await connectToDatabase();
   const user = await User.findOne({ email });
 
-  if (user?.password) {
+  if (user) {
     const rawToken = crypto.randomBytes(32).toString("hex");
     const hashedToken = crypto.createHash("sha256").update(rawToken).digest("hex");
 
@@ -52,9 +53,18 @@ async function forgotPasswordLocally(body: unknown) {
       process.env.NEXT_PUBLIC_APP_URL ||
       process.env.NEXTAUTH_URL ||
       "http://localhost:3000";
-    await sendPasswordResetEmail({
+    const emailResult = await sendPasswordResetEmail({
       to: user.email,
       resetUrl: `${baseUrl}/reset-password?token=${rawToken}`,
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: "If an account exists with that email, a password reset link has been sent.",
+      ...(emailResult.devResetUrl ? { devResetUrl: emailResult.devResetUrl } : {}),
+      ...(process.env.NODE_ENV === "development" && emailResult.error
+        ? { emailError: emailResult.error }
+        : {}),
     });
   }
 

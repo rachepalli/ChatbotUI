@@ -28,7 +28,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import ThemeToggle from "@/components/ui/ThemeToggle";
-import { useAppTranslation } from "@/components/ui/Language";
+import { useAppTranslation, useLanguage, type AppLanguage } from "@/components/ui/Language";
 
 type Attachment = {
   id: string;
@@ -63,9 +63,24 @@ type ChatResponse = {
   storedRagChunks?: number;
 };
 
-type SpeechRecognitionConstructor = new () => SpeechRecognition;
-
-type SpeechRecognition = {
+type SpeechRecognitionAlternative = { transcript: string };
+type SpeechRecognitionResult = {
+  isFinal: boolean;
+  length: number;
+  [index: number]: SpeechRecognitionAlternative;
+};
+type SpeechRecognitionResultList = {
+  length: number;
+  [index: number]: SpeechRecognitionResult;
+};
+type SpeechRecognitionEvent = Event & {
+  resultIndex: number;
+  results: SpeechRecognitionResultList;
+};
+type SpeechRecognitionErrorEvent = Event & {
+  error: string;
+};
+type SpeechRecognitionInstance = EventTarget & {
   continuous: boolean;
   interimResults: boolean;
   lang: string;
@@ -76,36 +91,19 @@ type SpeechRecognition = {
   onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
   onend: (() => void) | null;
 };
-
-type SpeechRecognitionEvent = {
-  results: SpeechRecognitionResultList;
-};
-
-type SpeechRecognitionErrorEvent = {
-  error: string;
-};
-
-type SpeechRecognitionResultList = {
-  length: number;
-  item: (index: number) => SpeechRecognitionResult;
-  [index: number]: SpeechRecognitionResult;
-};
-
-type SpeechRecognitionResult = {
-  length: number;
-  isFinal: boolean;
-  item: (index: number) => SpeechRecognitionAlternative;
-  [index: number]: SpeechRecognitionAlternative;
-};
-
-type SpeechRecognitionAlternative = {
-  transcript: string;
-};
-
 type SpeechWindow = Window & {
-  SpeechRecognition?: SpeechRecognitionConstructor;
-  webkitSpeechRecognition?: SpeechRecognitionConstructor;
   webkitAudioContext?: typeof AudioContext;
+  SpeechRecognition?: new () => SpeechRecognitionInstance;
+  webkitSpeechRecognition?: new () => SpeechRecognitionInstance;
+};
+
+const speechRecognitionLocales: Record<AppLanguage, string> = {
+  en: "en-US",
+  hi: "hi-IN",
+  kn: "kn-IN",
+  te: "te-IN",
+  ta: "ta-IN",
+  ml: "ml-IN",
 };
 
 const textLikeExtensions = [
@@ -124,6 +122,12 @@ const textLikeExtensions = [
   ".jsx",
 ];
 
+const imageDailyLimit = 5;
+const documentDailyLimit = 3;
+const uploadMaxFileSize = 50 * 1024 * 1024;
+const dailyImageUploadCounterKey = "rvk:dailyImageUploads";
+const dailyDocumentUploadCounterKey = "rvk:dailyDocumentUploads";
+
 function isPdf(file: File) {
   return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
 }
@@ -133,6 +137,61 @@ function isDocx(file: File) {
     file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
     file.name.toLowerCase().endsWith(".docx")
   );
+}
+
+function isImageUploadFile(file: File) {
+  return file.type.startsWith("image/");
+}
+
+function isImageUploadAttachment(attachment: Attachment) {
+  return attachment.kind === "image";
+}
+
+function isDocumentUploadAttachment(attachment: Attachment) {
+  return attachment.kind === "document";
+}
+
+function todayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function getDailyCounter(key: string) {
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed?.date === todayKey() ? Number(parsed.count || 0) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function getDailyImageUploadCount() {
+  return getDailyCounter(dailyImageUploadCounterKey);
+}
+
+function getDailyDocumentUploadCount() {
+  return getDailyCounter(dailyDocumentUploadCounterKey);
+}
+
+function addDailyCounter(key: string, count: number) {
+  if (!count) return;
+
+  try {
+    localStorage.setItem(
+      key,
+      JSON.stringify({ date: todayKey(), count: getDailyCounter(key) + count })
+    );
+  } catch {
+    // Server-side validation remains authoritative if local storage is unavailable.
+  }
+}
+
+function addDailyImageUploads(count: number) {
+  addDailyCounter(dailyImageUploadCounterKey, count);
+}
+
+function addDailyDocumentUploads(count: number) {
+  addDailyCounter(dailyDocumentUploadCounterKey, count);
 }
 
 function isTextLike(file: File) {
@@ -180,17 +239,26 @@ export default function ChatWindow({
   const [voiceError, setVoiceError] = useState("");
   const [speechSupported, setSpeechSupported] = useState(false);
   const [listening, setListening] = useState(false);
+  const [voiceProcessing, setVoiceProcessing] = useState(false);
   const [chatScrolled, setChatScrolled] = useState(false);
   const [quickActionsOpen, setQuickActionsOpen] = useState(false);
   const t = useAppTranslation();
+  const language = useLanguage();
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const attachMenuRef = useRef<HTMLDivElement | null>(null);
   const photosInputRef = useRef<HTMLInputElement | null>(null);
   const documentsInputRef = useRef<HTMLInputElement | null>(null);
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const speechRecognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+  const voiceStreamRef = useRef<MediaStream | null>(null);
+  const voiceChunksRef = useRef<Blob[]>([]);
   const voiceBaseTextRef = useRef("");
+  const voiceSessionTextRef = useRef("");
+  const voiceStopRequestedRef = useRef(false);
+  const voiceUsesRecognitionRef = useRef(false);
 
   useEffect(() => {
     if (!activeChatId) {
@@ -225,13 +293,33 @@ export default function ChatWindow({
 
   useEffect(() => {
     const speechWindow = window as SpeechWindow;
-    setSpeechSupported(Boolean(speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition));
+    const hasSpeechRecognition = Boolean(speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition);
+    const hasMediaRecorder = Boolean(typeof navigator.mediaDevices?.getUserMedia === "function" && typeof window.MediaRecorder !== "undefined");
+    setSpeechSupported(hasSpeechRecognition || hasMediaRecorder);
 
     return () => {
-      recognitionRef.current?.abort();
-      recognitionRef.current = null;
+      voiceStopRequestedRef.current = true;
+      speechRecognitionRef.current?.abort();
+      speechRecognitionRef.current = null;
+      mediaRecorderRef.current?.stream.getTracks().forEach((track) => track.stop());
+      mediaRecorderRef.current = null;
+      voiceStreamRef.current?.getTracks().forEach((track) => track.stop());
+      voiceStreamRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    if (!attachMenuOpen) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (!attachMenuRef.current?.contains(event.target as Node)) {
+        setAttachMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("click", handleClickOutside);
+    return () => document.removeEventListener("click", handleClickOutside);
+  }, [attachMenuOpen]);
 
   const handleCopy = async (text: string, index: number) => {
     await navigator.clipboard.writeText(text);
@@ -284,12 +372,27 @@ export default function ChatWindow({
     setAttachmentError("");
 
     try {
+      const oversizedFile = files.find((file) => file.size > uploadMaxFileSize);
+      if (oversizedFile) {
+        throw new Error(`${oversizedFile.name} ${t("attachmentTooLarge")}`);
+      }
+
+      const imagesToAdd = files.filter(isImageUploadFile).length;
+      const documentsToAdd = files.filter((file) => !isImageUploadFile(file)).length;
+      const pendingImages = attachments.filter(isImageUploadAttachment).length;
+      const pendingDocuments = attachments.filter(isDocumentUploadAttachment).length;
+      const dailyImages = getDailyImageUploadCount();
+      const dailyDocuments = getDailyDocumentUploadCount();
+
+      if (dailyImages + pendingImages + imagesToAdd > imageDailyLimit) {
+        throw new Error(t("dailyImageUploadLimitReached"));
+      }
+      if (dailyDocuments + pendingDocuments + documentsToAdd > documentDailyLimit) {
+        throw new Error(t("dailyDocumentUploadLimitReached"));
+      }
+
       const nextAttachments = await Promise.all(
         files.map(async (file) => {
-          if (file.size > 12 * 1024 * 1024) {
-            throw new Error(`${file.name} ${t("attachmentTooLarge")}`);
-          }
-
           const isImage = file.type.startsWith("image/");
           const attachment: Attachment = {
             id: crypto.randomUUID(),
@@ -320,10 +423,14 @@ export default function ChatWindow({
   };
 
   const openFilePicker = (kind: "photos" | "documents" | "camera") => {
+    const input =
+      kind === "photos"
+        ? photosInputRef.current
+        : kind === "documents"
+          ? documentsInputRef.current
+          : cameraInputRef.current;
+    input?.click();
     setAttachMenuOpen(false);
-    if (kind === "photos") photosInputRef.current?.click();
-    if (kind === "documents") documentsInputRef.current?.click();
-    if (kind === "camera") cameraInputRef.current?.click();
   };
 
   const removeAttachment = (id: string) => {
@@ -334,14 +441,201 @@ export default function ChatWindow({
     setChatScrolled(Boolean(scrollRef.current && scrollRef.current.scrollTop > 6));
   };
 
-  const stopVoiceInput = () => {
-    recognitionRef.current?.stop();
-    recognitionRef.current = null;
+  const buildVoiceInput = (sessionText: string, interimText = "") => {
+    return [voiceBaseTextRef.current, sessionText, interimText].filter(Boolean).join(" ").trim();
+  };
+
+  const stopSpeechRecognition = () => {
+    voiceStopRequestedRef.current = true;
+    speechRecognitionRef.current?.stop();
+    speechRecognitionRef.current = null;
+    voiceUsesRecognitionRef.current = false;
     setListening(false);
     playVoiceTone("stop");
   };
 
-  const toggleVoiceInput = () => {
+  const stopVoiceRecording = () => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder?.state === "recording") {
+      recorder.stop();
+    } else {
+      voiceStreamRef.current?.getTracks().forEach((track) => track.stop());
+      voiceStreamRef.current = null;
+      setListening(false);
+    }
+
+    playVoiceTone("stop");
+  };
+
+  const stopVoiceInput = () => {
+    if (voiceUsesRecognitionRef.current) {
+      stopSpeechRecognition();
+      return;
+    }
+
+    stopVoiceRecording();
+  };
+
+  const transcribeVoiceAudio = async (audio: Blob) => {
+    if (!audio.size) return;
+
+    setVoiceProcessing(true);
+    setVoiceError("");
+
+    try {
+      const formData = new FormData();
+      const extension = audio.type.includes("mp4") ? "mp4" : audio.type.includes("ogg") ? "ogg" : "webm";
+      formData.set("audio", audio, `voice.${extension}`);
+
+      const response = await fetch("/api/voice/translate", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error(t("voiceSignInRequired"));
+        }
+        const apiError = String(data.error || "");
+        if (response.status === 429 || /quota|billing/i.test(apiError)) {
+          throw new Error(t("voiceQuotaExceeded"));
+        }
+        throw new Error(apiError || `Voice transcription failed with ${response.status}`);
+      }
+
+      const transcribedText = String(data.text || "").trim();
+      if (!transcribedText) return;
+
+      setInput((current) => [current.trim() || voiceBaseTextRef.current, transcribedText].filter(Boolean).join(" "));
+      textareaRef.current?.focus();
+    } catch (error) {
+      setVoiceError(error instanceof Error ? error.message : t("couldNotStartVoiceInput"));
+    } finally {
+      setVoiceProcessing(false);
+    }
+  };
+
+  const startSpeechRecognition = (fallbackToRecorder: () => Promise<void>) => {
+    const speechWindow = window as SpeechWindow;
+    const SpeechRecognitionCtor = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) return false;
+
+    const recognition = new SpeechRecognitionCtor();
+    voiceBaseTextRef.current = input.trim();
+    voiceSessionTextRef.current = "";
+    voiceStopRequestedRef.current = false;
+    voiceUsesRecognitionRef.current = true;
+
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = speechRecognitionLocales[language] || speechRecognitionLocales.en;
+
+    recognition.onresult = (event) => {
+      let interimTranscript = "";
+      let finalTranscript = voiceSessionTextRef.current;
+
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        const transcript = result[0]?.transcript || "";
+        if (result.isFinal) {
+          finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+
+      voiceSessionTextRef.current = finalTranscript;
+      setInput(buildVoiceInput(finalTranscript, interimTranscript));
+    };
+
+    recognition.onerror = (event) => {
+      if (event.error === "aborted" || event.error === "no-speech") return;
+
+      voiceStopRequestedRef.current = true;
+      speechRecognitionRef.current?.abort();
+      speechRecognitionRef.current = null;
+      voiceUsesRecognitionRef.current = false;
+      setListening(false);
+
+      if (event.error === "not-allowed") {
+        setVoiceError(t("microphoneDenied"));
+        return;
+      }
+
+      void fallbackToRecorder();
+    };
+
+    recognition.onend = () => {
+      if (!voiceStopRequestedRef.current) {
+        try {
+          recognition.start();
+          return;
+        } catch {
+          // Recognition ended unexpectedly.
+        }
+      }
+
+      speechRecognitionRef.current = null;
+      voiceUsesRecognitionRef.current = false;
+      setListening(false);
+    };
+
+    speechRecognitionRef.current = recognition;
+
+    try {
+      recognition.start();
+      setListening(true);
+      playVoiceTone("start");
+      textareaRef.current?.focus();
+      return true;
+    } catch {
+      voiceUsesRecognitionRef.current = false;
+      speechRecognitionRef.current = null;
+      return false;
+    }
+  };
+
+  const startVoiceRecording = async (existingStream?: MediaStream) => {
+    const stream = existingStream ?? (await navigator.mediaDevices.getUserMedia({ audio: true }));
+    const preferredTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
+    const mimeType = preferredTypes.find((type) => MediaRecorder.isTypeSupported(type));
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+
+    voiceBaseTextRef.current = input.trim();
+    voiceChunksRef.current = [];
+    voiceStreamRef.current = stream;
+    voiceUsesRecognitionRef.current = false;
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        voiceChunksRef.current.push(event.data);
+      }
+    };
+
+    recorder.onerror = () => {
+      setVoiceError(t("voiceInputStopped"));
+      setListening(false);
+    };
+
+    recorder.onstop = () => {
+      const audio = new Blob(voiceChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+      voiceChunksRef.current = [];
+      stream.getTracks().forEach((track) => track.stop());
+      voiceStreamRef.current = null;
+      mediaRecorderRef.current = null;
+      setListening(false);
+      void transcribeVoiceAudio(audio);
+    };
+
+    mediaRecorderRef.current = recorder;
+    recorder.start(250);
+    setListening(true);
+    playVoiceTone("start");
+    textareaRef.current?.focus();
+  };
+
+  const toggleVoiceInput = async () => {
     setVoiceError("");
 
     if (listening) {
@@ -349,49 +643,40 @@ export default function ChatWindow({
       return;
     }
 
+    if (!window.isSecureContext) {
+      setVoiceError(t("voiceRequiresSecureContext"));
+      return;
+    }
+
     const speechWindow = window as SpeechWindow;
-    const SpeechRecognitionApi = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
-    if (!SpeechRecognitionApi) {
+    const hasSpeechRecognition = Boolean(speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition);
+    const hasMediaRecorder = Boolean(typeof navigator.mediaDevices?.getUserMedia === "function" && typeof window.MediaRecorder !== "undefined");
+
+    if (!hasSpeechRecognition && !hasMediaRecorder) {
       setVoiceError(t("voiceUnsupported"));
       return;
     }
 
+    const beginRecorderCapture = async () => {
+      setVoiceError("");
+      await startVoiceRecording();
+    };
+
     try {
-      const recognition = new SpeechRecognitionApi();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = navigator.language || "en-US";
-      voiceBaseTextRef.current = input.trim();
+      if (hasSpeechRecognition && startSpeechRecognition(beginRecorderCapture)) {
+        return;
+      }
 
-      recognition.onresult = (event) => {
-        const transcripts = [];
-        for (let index = 0; index < event.results.length; index += 1) {
-          transcripts.push(event.results[index][0]?.transcript || "");
-        }
+      if (hasMediaRecorder) {
+        await beginRecorderCapture();
+        return;
+      }
 
-        const spokenText = transcripts.join(" ").replace(/\s+/g, " ").trim();
-        const baseText = voiceBaseTextRef.current;
-        setInput([baseText, spokenText].filter(Boolean).join(" "));
-      };
-
-      recognition.onerror = (event) => {
-        setVoiceError(event.error === "not-allowed" ? t("microphoneDenied") : t("voiceInputStopped"));
-        setListening(false);
-      };
-
-      recognition.onend = () => {
-        setListening(false);
-        recognitionRef.current = null;
-      };
-
-      recognitionRef.current = recognition;
-      recognition.start();
-      setListening(true);
-      playVoiceTone("start");
-      textareaRef.current?.focus();
-    } catch {
-      setVoiceError(t("couldNotStartVoiceInput"));
+      setVoiceError(t("voiceUnsupported"));
+    } catch (error) {
+      setVoiceError(error instanceof DOMException && error.name === "NotAllowedError" ? t("microphoneDenied") : t("couldNotStartVoiceInput"));
       setListening(false);
+      voiceUsesRecognitionRef.current = false;
     }
   };
 
@@ -479,7 +764,7 @@ export default function ChatWindow({
           {attachmentError}
         </p>
       )}
-      {(voiceError || listening) && (
+      {(voiceError || listening || voiceProcessing) && (
         <div
           className={`mb-2 flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${
             voiceError
@@ -487,13 +772,13 @@ export default function ChatWindow({
               : "border-red-500/25 bg-red-500/10 text-red-600 dark:text-red-300"
           }`}
         >
-          {listening && !voiceError && (
+          {(listening || voiceProcessing) && !voiceError && (
             <span className="relative flex h-2.5 w-2.5">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500 opacity-60" />
               <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-500" />
             </span>
           )}
-          <span>{voiceError || t("listeningMessage")}</span>
+          <span>{voiceError || (voiceProcessing ? t("translatingVoice") : t("listeningMessage"))}</span>
         </div>
       )}
 
@@ -526,7 +811,7 @@ export default function ChatWindow({
         transition={{ layout: { duration: 0.52, ease: [0.22, 1, 0.36, 1] } }}
         className="group flex items-end gap-2 rounded-2xl border border-[color:var(--border)] bg-[color:var(--surface)] p-2 shadow-[var(--composer-shadow)] transition duration-200 focus-within:border-[color:var(--accent)]"
       >
-        <div className="relative shrink-0">
+        <div className="relative shrink-0" ref={attachMenuRef}>
           <button
             type="button"
             onClick={() => setAttachMenuOpen((open) => !open)}
@@ -541,6 +826,7 @@ export default function ChatWindow({
             <div className="menu-surface absolute bottom-11 left-0 z-20 w-48 overflow-hidden p-1" role="menu">
               <button
                 type="button"
+                onMouseDown={(event) => event.stopPropagation()}
                 onClick={() => openFilePicker("photos")}
                 className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-[color:var(--surface-muted)]"
                 role="menuitem"
@@ -550,6 +836,7 @@ export default function ChatWindow({
               </button>
               <button
                 type="button"
+                onMouseDown={(event) => event.stopPropagation()}
                 onClick={() => openFilePicker("documents")}
                 className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-[color:var(--surface-muted)]"
                 role="menuitem"
@@ -559,6 +846,7 @@ export default function ChatWindow({
               </button>
               <button
                 type="button"
+                onMouseDown={(event) => event.stopPropagation()}
                 onClick={() => openFilePicker("camera")}
                 className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-[color:var(--surface-muted)]"
                 role="menuitem"
@@ -591,7 +879,7 @@ export default function ChatWindow({
         <button
           type="button"
           onClick={toggleVoiceInput}
-          disabled={!speechSupported || sending}
+          disabled={!speechSupported || sending || voiceProcessing}
           className={`relative h-11 min-h-11 w-11 rounded-xl border transition duration-200 ${
             listening
               ? "border-red-500/40 bg-red-500/10 text-red-600 shadow-[0_0_0_4px_rgba(239,68,68,0.08)] hover:bg-red-500/15 dark:text-red-300"
@@ -691,6 +979,8 @@ export default function ChatWindow({
       const data = await res.json();
       if (data.model && data.model !== model) setModel(data.model);
       if (!res.ok) throw new Error(data.error || `Chat request failed with ${res.status}`);
+      addDailyImageUploads(attachmentsToSend.filter(isImageUploadAttachment).length);
+      addDailyDocumentUploads(attachmentsToSend.filter(isDocumentUploadAttachment).length);
 
       setMessages((prev) => {
         const updated = [...prev];

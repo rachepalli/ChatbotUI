@@ -1,7 +1,6 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { useTranslate } from "@tolgee/react";
 
 export type AppLanguage = "en" | "hi" | "kn" | "te" | "ta" | "ml";
 
@@ -614,21 +613,7 @@ export function translate(language: AppLanguage, key: TranslationKey) {
   return localTranslations[language][key] || localTranslations.en[key];
 }
 
-function hasLocalTranslation(language: AppLanguage, key: TranslationKey) {
-  return Boolean(localTranslations[language][key]);
-}
-
 export function useAppTranslation() {
   const language = useLanguage();
-  const { t: tolgeeTranslate } = useTranslate(undefined, { useSuspense: false });
-
-  return (key: TranslationKey) => {
-    const localValue = translate(language, key);
-
-    if (language !== "en" && hasLocalTranslation(language, key)) {
-      return localValue;
-    }
-
-    return tolgeeTranslate(key, localValue);
-  };
+  return (key: TranslationKey) => translate(language, key);
 }

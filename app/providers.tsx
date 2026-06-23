@@ -1,7 +1,7 @@
 "use client";
 
 import { SessionProvider } from "next-auth/react";
-import AppTolgeeProvider from "@/components/ui/AppTolgeeProvider";
+import AppGoogleTranslateProvider from "@/components/ui/AppGoogleTranslateProvider";
 
 export default function Providers({
   children,
@@ -9,8 +9,8 @@ export default function Providers({
   children: React.ReactNode;
 }) {
   return (
-    <AppTolgeeProvider>
+    <AppGoogleTranslateProvider>
       <SessionProvider>{children}</SessionProvider>
-    </AppTolgeeProvider>
+    </AppGoogleTranslateProvider>
   );
 }

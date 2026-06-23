@@ -17,6 +17,7 @@ async function tryProxyResetPassword(baseUrl: string | undefined, path: string, 
       path,
       method: "POST",
       body,
+      timeoutMs: 15000,
     });
   } catch (error) {
     console.error(`Reset password proxy failed for ${path}`, error);

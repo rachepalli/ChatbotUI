@@ -97,6 +97,12 @@ function listMessages(userId, chatId) {
     .sort((left, right) => new Date(left.createdAt || 0) - new Date(right.createdAt || 0));
 }
 
+function listUserMessages(userId) {
+  return readStore()
+    .messages.filter((message) => message.userId === userId)
+    .sort((left, right) => new Date(left.createdAt || 0) - new Date(right.createdAt || 0));
+}
+
 function countUserMessages(userId, chatId) {
   return readStore().messages.filter(
     (message) => message.userId === userId && message.threadId === chatId && message.role === "user"
@@ -110,5 +116,6 @@ module.exports = {
   insertMessage,
   listMessages,
   listThreads,
+  listUserMessages,
   upsertThread,
 };

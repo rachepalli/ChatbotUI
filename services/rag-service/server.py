@@ -983,7 +983,7 @@ def format_answer_prompt(message: str, sources: list[dict[str, Any]], summary_mo
             "Cover every major heading/topic from the document at least briefly, section-by-section. Do not summarize only the most similar retrieved text. "
             "Preserve the document hierarchy and keep the flow coherent and connected. "
             "Use concise explanations instead of raw copied text. "
-            "Use Markdown bold only for topic headings and section headings. Do not bold normal body sentences or bullet text. "
+            "Use Markdown bold for topic headings, section headings, subheadings, and short bullet lead-ins. Do not bold full body sentences. "
             "Keep body text plain, concise, and easy to scan. "
             "Include only details that are explicitly present in the source material. "
             "Never dump retrieved chunks, repeat OCR fragments, copy paragraphs directly, or return fragmented vector results. "
@@ -1000,7 +1000,7 @@ def format_answer_prompt(message: str, sources: list[dict[str, Any]], summary_mo
             "If the request names a specific heading, topic, concept, or chapter, explain only that topic deeply and avoid summarizing the entire document. "
             "Cover definitions, concepts, workflows, steps, features, examples, benefits, limitations, tables, and important facts when they are present in the document. "
             "Add brief examples where useful and supported by the document. "
-            "Use clear sections with bold Markdown headings. Do not bold normal body sentences or bullet text. "
+            "Use clear sections with bold Markdown headings, subheadings, and short bullet lead-ins. Do not bold full body sentences. "
             "Paraphrase instead of copying raw paragraphs. Never dump retrieved chunks, repeat OCR fragments, or return fragmented vector results. "
             "Stay grounded in the source material and do not invent details. Do not mention chunks, retrieval, RAG, or source numbers."
         )
@@ -1079,6 +1079,7 @@ class AgnoRagEngine:
                 "For question-answering, if the retrieved chunks do not contain the answer, say what is missing.",
                 "When chunks are available, do not say you cannot access the uploaded document.",
                 "Write polished ChatGPT-style answers with clear Markdown, concise paragraphs, and useful bullets.",
+                "Use Markdown bold for headings, subheadings, and short bullet lead-ins so the answer is easy to scan.",
                 "Match the user's requested depth. If they ask for a detailed explanation, provide a fuller structured explanation grounded in the document.",
                 "Do not mention chunks, retrieval, RAG, source numbers, or internal context in the final answer.",
                 "For summary requests, cover all major document headings and topics section-by-section, not only the top similarity matches.",
