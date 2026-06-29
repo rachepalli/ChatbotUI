@@ -37,6 +37,16 @@ yarn-error.log*
 .next-dev.out
 .rag-service-test.err
 .rag-service-test.out
+.*-service.err
+.*-service.out
+.dev-all.err
+.dev-all.out
+.rag-check.err
+.rag-check.out
+.rag-test.err
+.rag-test.out
+.local-data/
+models.zip
 
 # env files (can opt-in for committing if needed)
 .env*
